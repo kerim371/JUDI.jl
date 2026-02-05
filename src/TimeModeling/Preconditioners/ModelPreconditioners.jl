@@ -233,6 +233,9 @@ function update_illum(model::AbstractModel, i::PhysicalParameter, mode)
     _illums[objectid(model)][2] = is_updated(_illums[objectid(model)][1])
 end
 
+# ✅ ДОБАВИТЬ ЭТУ СТРОКУ:
+update_illum(vals::Tuple, F::judiJacobian) = vals
+
 function _compute_illum(::judiIllumination{T, M, K, R}, status, mode) where {T, M, K, R}
     if status && ~R
         return false

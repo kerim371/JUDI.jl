@@ -403,31 +403,28 @@ def J_adjoint_freq(model, src_coords, wavelet, rec_coords, recin,
     rec, u, Iu, _ = ffunc(model, src_coords, rec_coords, wavelet, save=False,
                           freq_list=freq_list, ic=ic, ws=ws,
                           dft_sub=dft_sub, nlind=nlind, illum=illum, f0=f0, fw=fw)
-    # Residual and gradient
     f, residual = Loss(rec, recin, model.critical_dt,
                        is_residual=is_residual, misfit=misfit)
 
-    # Process gradient based on model type
     if model.is_viscoacoustic:
         g, Iv, _ = gradient_visco(model, residual, rec_coords, u, ic=ic,
                                 freq=freq_list, dft_sub=dft_sub, f0=f0, illum=illum, fw=fw)
-        # g is a tuple (grad_vp, grad_q) for viscoacoustic
         grad_vp, grad_q = g
-        grad_vp_data = grad_vp.data
-        grad_q_data = grad_q.data
-        is_visco = True
     else:
         g, Iv, _ = gradient(model, residual, rec_coords, u, ic=ic,
                             freq=freq_list, dft_sub=dft_sub, f0=f0, illum=illum, fw=fw)
-        # g is a single gradient for regular models
-        grad_vp_data = g.data
-        grad_q_data = None
-        is_visco = False
+        grad_vp = g
 
     if return_obj:
-        # ✅ ИСПРАВЛЕНО: всегда 5 элементов + флаг
-        return f, grad_vp_data, grad_q_data, getattr(Iu, "data", None), getattr(Iv, "data", None), is_visco
-    return grad_vp_data, grad_q_data, getattr(Iu, "data", None), getattr(Iv, "data", None), is_visco
+        if model.is_viscoacoustic:
+            return f, grad_vp.data, grad_q.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+        else:
+            return f, grad_vp.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+    else:
+        if model.is_viscoacoustic:
+            return grad_vp.data, grad_q.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+        else:
+            return grad_vp.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
 
 
 def J_adjoint_standard(model, src_coords, wavelet, rec_coords, recin,
@@ -477,41 +474,36 @@ def J_adjoint_standard(model, src_coords, wavelet, rec_coords, recin,
     Array
         Adjoint jacobian on the input data (gradient)
     """
-    # Для вязкоакустики используем visco imaging condition
-    if model.is_viscoacoustic:
-        gradient_func = gradient_visco
-    else:
-        gradient_func = gradient
+    gradient_func = gradient_visco if model.is_viscoacoustic else gradient
     
     ffunc = op_fwd_J[born_fwd]
     rec, u, Iu, _ = ffunc(model, src_coords, rec_coords, wavelet, save=True, nlind=nlind,
                           f0=f0, ws=ws, illum=illum, ic=ic,
                           t_sub=t_sub, fw=fw)
 
-    # Residual and gradient
     f, residual = Loss(rec, recin, model.critical_dt,
                        is_residual=is_residual, misfit=misfit)
 
     g, Iv, _ = gradient_func(model, residual, rec_coords, u, ic=ic,
                              f0=f0, illum=illum, fw=fw)
-    # Process gradient based on model type
-    if model.is_viscoacoustic:
-        # g is a tuple (grad_vp, grad_q) for viscoacoustic
-        grad_vp, grad_q = g
-        # ✅ ИСПРАВЛЕНО: возвращаем плоскую структуру вместо вложенного кортежа
-        grad_vp_data = grad_vp.data
-        grad_q_data = grad_q.data
-        is_visco = True
-    else:
-        # g is a single gradient for regular models
-        grad_vp_data = g.data
-        grad_q_data = None  # Заглушка для совместимости
-        is_visco = False
-
+    
+    # ✅ ПЛОСКАЯ СТРУКТУРА БЕЗ ВЛОЖЕННЫХ КОРТЕЖЕЙ
     if return_obj:
-        # ✅ ИСПРАВЛЕНО: всегда 5 элементов, последний — флаг вязкоакустики
-        return f, grad_vp_data, grad_q_data, getattr(Iu, "data", None), getattr(Iv, "data", None), is_visco
-    return grad_vp_data, grad_q_data, getattr(Iu, "data", None), getattr(Iv, "data", None), is_visco
+        # FWI mode: (fval, grad_vp, grad_q, Iu, Iv) — 5 элементов для вязкоакустики
+        if model.is_viscoacoustic:
+            grad_vp, grad_q = g
+            return f, grad_vp.data, grad_q.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+        else:
+            return f, g.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+    else:
+        # RTM mode: ПЛОСКАЯ структура (без вложенных кортежей!)
+        if model.is_viscoacoustic:
+            grad_vp, grad_q = g
+            # 4 элемента: grad_vp, grad_q, Iu, Iv
+            return grad_vp.data, grad_q.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+        else:
+            # 3 элемента: grad, Iu, Iv
+            return g.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
 
 
 def J_adjoint_checkpointing(model, src_coords, wavelet, rec_coords, recin,
@@ -567,24 +559,19 @@ def J_adjoint_checkpointing(model, src_coords, wavelet, rec_coords, recin,
         Adjoint jacobian on the input data (gradient)
     """
     ffunc = op_fwd_J[born_fwd]
-    # Optimal checkpointing
     op_f, u, rec_g, kwu = ffunc(model, src_coords, rec_coords, wavelet, fw=fw,
                                 save=False, return_op=True,
                                 ic=ic, nlind=nlind, ws=ws, f0=f0, illum=illum)
-    if model.is_viscoacoustic:
-        op, g, kwg = gradient_visco(model, recin, rec_coords, u,
-                            return_op=True, ic=ic, f0=f0, save=False, illum=illum,
-                            fw=fw)
-    else:
-        op, g, kwg = gradient(model, recin, rec_coords, u,
-                            return_op=True, ic=ic, f0=f0, save=False, illum=illum,
-                            fw=fw)
+    
+    gradient_func = gradient_visco if model.is_viscoacoustic else gradient
+    op, g, kwg = gradient_func(model, recin, rec_coords, u,
+                               return_op=True, ic=ic, f0=f0, save=False, illum=illum,
+                               fw=fw)
 
     nt = wavelet.shape[0]
     rec = Receiver(name='rec', grid=model.grid, ntime=nt, coordinates=rec_coords)
     kwg['srcv1' if model.is_tti else 'srcv'] = rec
 
-    # Wavefields to checkpoint
     cpwf = [uu for uu in as_tuple(u)]
     if model.is_viscoacoustic:
         r = memory_field(u)
@@ -592,15 +579,12 @@ def J_adjoint_checkpointing(model, src_coords, wavelet, rec_coords, recin,
         kwu.update({r.name: r})
     cp = DevitoCheckpoint(cpwf)
 
-    # Wrapped ops
     wrap_fw = CheckpointOperator(op_f, **kwu)
     wrap_rev = CheckpointOperator(op, **kwg)
 
-    # Run forward
     wrp = Revolver(cp, wrap_fw, wrap_rev, n_checkpoints, nt-2)
     wrp.apply_forward()
 
-    # Residual and gradient
     f, _ = Loss(rec_g, recin, model.critical_dt, is_residual=is_residual,
                 misfit=misfit)
     rec.data[:] = as_tuple(rec_g)[0].data[:]
@@ -610,19 +594,21 @@ def J_adjoint_checkpointing(model, src_coords, wavelet, rec_coords, recin,
     Iu = getattr(kwu.get("Iu", None), "data", None)
     Iv = getattr(kwg.get("Iv", None), "data", None)
     
-    # Process gradient based on model type
     if model.is_viscoacoustic:
-        # g is a tuple (grad_vp, grad_q) for viscoacoustic
         grad_vp, grad_q = g
-        grad_data = (grad_vp.data, grad_q.data)
     else:
-        # g is a single gradient for regular models
-        grad_data = g.data
-    
-    if return_obj:
-        return f, grad_data, Iu, Iv
-    return grad_data, Iu, Iv
+        grad_vp = g
 
+    if return_obj:
+        if model.is_viscoacoustic:
+            return f, grad_vp.data, grad_q.data, Iu, Iv
+        else:
+            return f, grad_vp.data, Iu, Iv
+    else:
+        if model.is_viscoacoustic:
+            return grad_vp.data, grad_q.data, Iu, Iv
+        else:
+            return grad_vp.data, Iu, Iv
 
 op_fwd_J = {False: forward, True: born}
 

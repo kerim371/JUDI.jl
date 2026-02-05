@@ -101,15 +101,37 @@ function multi_src_fg!(G, model, q, dobs, dm; options=Options(), ms_func=multi_s
     # Distribute source
     res = run_and_reduce(ms_func, pool, nsrc, arg_func; kw=kw_func)
     res = update_illum(res, model, :adjoint_born)
-    f, g = as_vec(res, Val(options.return_array))
-    if G isa Tuple && length(G) == 2 && g isa Tuple && length(g) == 2
-        # Вязкоакустический случай: накапливаем оба градиента отдельно
-        G[1] .+= g[1]
-        G[2] .+= g[2]
+    
+    f = res[1]
+    
+    # ✅ ИСПРАВЛЕНО: надёжное извлечение градиентов для ВСЕХ режимов вязкоакустики
+    if G isa Tuple && length(G) == 2
+        # Случай 1: плоская структура (fval, grad_vp, grad_q, ...) — 5+ элементов
+        if length(res) >= 3 && res[2] isa PhysicalParameter && res[3] isa PhysicalParameter
+            G[1] .+= res[2]  # grad_vp
+            G[2] .+= res[3]  # grad_q
+        # Случай 2: вложенная структура (fval, (grad_vp, grad_q), ...) — 2+ элементов
+        elseif res[2] isa Tuple && length(res[2]) == 2
+            G[1] .+= res[2][1]
+            G[2] .+= res[2][2]
+        # Случай 3: режим RTM с плоской структурой (grad_vp, grad_q, ...) — 4 элемента
+        elseif length(res) >= 4 && res[1] isa PhysicalParameter && res[2] isa PhysicalParameter
+            G[1] .+= res[1]
+            G[2] .+= res[2]
+            f = 0.0f0  # RTM не возвращает fval
+        else
+            # Fallback с диагностикой
+            @warn "Неожиданная структура градиентов для вязкоакустики" maxlog=1 _id=:visco_grad_struct
+            @warn "res type: $(typeof(res)), length: $(length(res))" maxlog=1 _id=:visco_grad_struct
+            if length(res) >= 2
+                G[1] .+= res[2]  # Накапливаем первый градиент как есть
+            end
+        end
     else
-        # Обычный акустический случай
-        G .+= g
+        # Обычная акустика: один градиент
+        G .+= res[2]
     end
+    
     return f
 end
 

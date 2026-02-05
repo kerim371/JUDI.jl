@@ -49,9 +49,25 @@ function _time_modeling(model_full::AbstractModel, srcGeometry::GeomOrNot, srcDa
 end
 
 # Backward compat for external packages
-post_process(t::Tuple, modelPy::Py, op::Val, Gr, o::JUDIOptions) = post_process(t, modelPy, op, Gr, nothing, o)
+# ✅ ОБРАБОТКА ВЯЗКОАКУСТИКИ: кортеж из 4 элементов (2 градиента + 2 освещения)
+function post_process(t::NTuple{4, Any}, modelPy::Py, ::Val{:adjoint_born}, Gr::Geometry{T}, Gs, options::JUDIOptions) where T<:Number
+    # Первые два элемента — градиенты по скорости и Q
+    grad_vp = post_process(t[1], modelPy, Val(:adjoint_born), Gr, Gs, options)
+    grad_q = post_process(t[2], modelPy, Val(:adjoint_born), Gr, Gs, options)
+    # Возвращаем кортеж из двух градиентов (освещение игнорируем для результата миграции)
+    return (grad_vp, grad_q)
+end
 
-# Post processing of output of devito based on parameters
+# ✅ ОБРАБОТКА АКУСТИКИ: кортеж из 3 элементов (градиент + 2 освещения)
+function post_process(t::NTuple{3, Any}, modelPy::Py, ::Val{:adjoint_born}, Gr::Geometry{T}, Gs, options::JUDIOptions) where T<:Number
+    # Первый элемент — градиент
+    grad = post_process(t[1], modelPy, Val(:adjoint_born), Gr, Gs, options)
+    # Возвращаем один градиент (как раньше)
+    return grad
+end
+
+# Стандартные перегрузки (оставляем как есть, но после специфичных)
+post_process(t::Tuple, modelPy::Py, op::Val, Gr, o::JUDIOptions) = post_process(t, modelPy, op, Gr, nothing, o)
 post_process(t::Tuple, modelPy::Py, op::Val, Gr, Gs, o::JUDIOptions) = (post_process(t[1], modelPy, op, Gr, Gs, o), post_process(Base.tail(t), modelPy, Val(:adjoint_born), Gr, Gs, Options(;sum_padding=false))...)
 post_process(t::Tuple{}, ::Py, ::Val, ::Any, ::Any, ::JUDIOptions) = t
 
