@@ -10,7 +10,7 @@ from geom_utils import geom_expr
 from fields import wavefield, forward_wavefield
 from fields_exprs import (otf_dft, extended_rec, illumexpr,
                           extented_src, save_subsampled, weighted_norm)
-from sensitivity import grad_expr, lin_src
+from sensitivity import grad_expr, lin_src, grad_expr_multi
 from utils import opt_op
 
 try:
@@ -190,12 +190,12 @@ def born_op(p_params, tti, visco, elas, space_order, fw, spacing, save, pt_src,
     return op
 
 
+# В operators.py, в adjoint_born_op:
 @memoized_func
 def adjoint_born_op(p_params, tti, visco, elas, space_order, fw, spacing, pt_rec, fs, w,
                     save, t_sub, nfreq, dft_sub, ic, illum):
     """
-    Low level gradient operator creation, to be used through `propagators.py`
-    Compute the action of the adjoint Jacobian onto a residual J'* δ d.
+    Low level gradient operator creation
     """
     info("Building adjoint born operator")
     model = EmptyModel(tti, visco, elas, spacing, fs, space_order, p_params)
@@ -205,7 +205,7 @@ def adjoint_born_op(p_params, tti, visco, elas, space_order, fw, spacing, pt_rec
     rcords = np.ones((1, ndim)) if pt_rec else None
     freq_list = np.ones((nfreq,)) if nfreq > 0 else None
 
-    # Setting adjoint wavefieldgradient
+    # Setting adjoint wavefield
     v = wavefield(model, space_order, fw=not fw, tfull=True)
     u = forward_wavefield(model, space_order, save=save, nt=nt,
                           dft=nfreq > 0, t_sub=t_sub, fw=fw)
@@ -213,26 +213,32 @@ def adjoint_born_op(p_params, tti, visco, elas, space_order, fw, spacing, pt_rec
     # Setup source and receiver
     gexpr = geom_expr(model, v, src_coords=rcords, wavelet=residual, fw=not fw)
 
-    # Set up PDE expression and rearrange
+    # Set up PDE expression
     pde, extra = wave_kernel(model, v, fw=False, f0=Constant('f0'))
 
-    # Setup gradient wrt m
-    gradm = Function(name="gradm", grid=model.grid)
-    g_expr = grad_expr(gradm, u, v, model, w=w, freq=freq_list,
-                       dft_sub=dft_sub, ic=ic)
+    # Setup gradient(s) - ВОТ ЭТО ИЗМЕНЯЕМ!
+    if visco:
+        # Для вязкоакустики: два градиента
+        gradm = Function(name="gradm", grid=model.grid)
+        gradq = Function(name="gradq", grid=model.grid)
+        grad_dict = {"grad_m": gradm, "grad_q": gradq}
+        # Используем grad_expr_multi для нескольких градиентов
+        g_expr = grad_expr_multi(grad_dict, u, v, model, w=w, freq=freq_list,
+                                 dft_sub=dft_sub, ic=ic)
+    else:
+        # Для обычных моделей: один градиент
+        gradm = Function(name="gradm", grid=model.grid)
+        grad_dict = {"grad_m": gradm}
+        g_expr = grad_expr_multi(grad_dict, u, v, model, w=w, freq=freq_list,
+                                 dft_sub=dft_sub, ic=ic)
 
     # Illumination
     Ieq = illumexpr(v, illum)
 
-    # Create operator and run
+    # Create operator
     subs = model.spacing_map
+    op_name = "gradient"
     op = Operator(pde + gexpr + extra + g_expr + Ieq, subs=subs,
-                  name="gradient"+name(model),
-                  opt=opt_op(model))
-    try:
-        op.cfunction
-    except:
-        op = Operator(pde + r_expr + g_expr,
-                      subs=subs, name="gradient"+name(model),
-                      opt='advanced')
+                  name=op_name+name(model), opt=opt_op(model))
+    op.cfunction
     return op

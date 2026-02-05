@@ -152,6 +152,47 @@ def gradient(model, residual, rcv_coords, u, return_op=False, fw=True,
     return gradm, I, summary
 
 
+def gradient_visco(model, residual, rcv_coords, u, return_op=False, fw=True,
+                   w=None, freq=None, dft_sub=None, ic="as", f0=0.015, save=True, illum=False):
+    """
+    Gradient computation for viscoacoustic media (returns both Vp and Q gradients)
+    """
+    space_order = model.space_order
+    v = wavefield(model, space_order, fw=not fw, tfull=True)
+    try:
+        t_sub = as_tuple(u)[0].indices[0]._factor
+        if isinstance(t_sub, Constant):
+            t_sub = t_sub.data
+    except AttributeError:
+        t_sub = 1
+    
+    gradm = Function(name="gradm", grid=model.grid)
+    gradq = Function(name="gradq", grid=model.grid)
+    src, _ = src_rec(model, v, src_coords=rcv_coords, wavelet=residual)
+    op = adjoint_born_op(model.physical_parameters, model.is_tti, model.is_viscoacoustic,
+                         model.is_elastic, space_order, fw, model.spacing,
+                         rcv_coords is not None, model.fs, w, save, t_sub, nfreq(freq),
+                         dft_sub, ic, illum)
+    kw = base_kwargs(model.critical_dt)
+    f, _ = frequencies(freq)
+    f0q = Constant('f0', value=f0) if model.is_viscoacoustic else None
+    I = illumination(v, illum)
+    base_fields = fields_kwargs(src, u, v, gradm, f0q, f, I)
+    kw.update(base_fields)
+    kw['gradq'] = gradq
+    # ✅ РАСКОММЕНТИРОВАНО: критически важно для вязкоакустики!
+    if model.is_viscoacoustic:
+        r = memory_field(v)
+        kw.update({r.name: r})
+    kw.update(model.physical_params())
+    kw.update(model.abox(src, None, fw=not fw))
+    if return_op:
+        return op, (gradm, gradq), kw
+    summary = op(**kw)
+    cleanup_wf(u)
+    return (gradm, gradq), I, summary
+
+
 def born(model, src_coords, rcv_coords, wavelet, save=False,
          qwf=None, return_op=False, ic="as", freq_list=None, dft_sub=None,
          ws=None, t_sub=1, nlind=False, f0=0.015, illum=False, fw=True):

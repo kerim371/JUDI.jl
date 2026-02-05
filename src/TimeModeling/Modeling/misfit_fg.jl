@@ -1,10 +1,23 @@
 
-export fwi_objective, lsrtm_objective, fwi_objective!, lsrtm_objective!
+export fwi_objective, lsrtm_objective, fwi_objective!, lsrtm_objective!, fwi_visco_objective, is_viscoacoustic
 
 # Type of accepted input
 Dtypes = Union{<:judiVector, NTuple{N, <:judiVector} where N, Vector{<:judiVector}, <:LazyMul}
 MTypes = Union{<:AbstractModel, NTuple{N, <:AbstractModel} where N, Vector{<:AbstractModel}}
 dmTypes = Union{dmType, NTuple{N, dmType} where N, Vector{dmType}}
+
+function is_viscoacoustic(model::AbstractModel)
+    # Check if model has Q parameter (qp field)
+    return hasfield(typeof(model), :qp) && !isnothing(model.qp)
+end
+
+function is_viscoacoustic(model::Vector{<:AbstractModel})
+    return any(is_viscoacoustic, model)
+end
+
+function is_viscoacoustic(model::NTuple{N, <:AbstractModel}) where N
+    return any(is_viscoacoustic, model)
+end
 
 function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, dm, options::JUDIOptions;
                       nlind::Bool=false, lin::Bool=false, misfit::Function=mse, illum::Bool=false,
@@ -74,10 +87,21 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     end
 
     @juditime "Remove padding from gradient" begin
-        grad = PhysicalParameter(remove_padding(argout[2], modelPy.padsizes; true_adjoint=options.sum_padding), spacing(model), origin(model))
+        # ✅ Для вязкоакустики: градиенты в отдельных элементах argout[2] и argout[3]
+        if JUDI.is_viscoacoustic(model_full) && length(argout) >= 4
+            grad_vp = PhysicalParameter(remove_padding(argout[2], modelPy.padsizes; true_adjoint=options.sum_padding),
+                                        spacing(model), origin(model))
+            grad_q = PhysicalParameter(remove_padding(argout[3], modelPy.padsizes; true_adjoint=options.sum_padding),
+                                    spacing(model), origin(model))
+            grad = (grad_vp, grad_q)  # ← кортеж из двух градиентов
+        else
+            grad = PhysicalParameter(remove_padding(argout[2], modelPy.padsizes; true_adjoint=options.sum_padding),
+                                    spacing(model), origin(model))
+        end
     end
 
-    fval = Ref{Float32}(argout[1])
+    fval = argout[1]  # Скаляр, не нужно оборачивать в Ref
+
     if illum
         @juditime "Process illumination" begin
             illumu = PhysicalParameter(remove_padding(argout[3], modelPy.padsizes; true_adjoint=false), spacing(model), origin(model))
@@ -99,10 +123,11 @@ Get number of experiments given a JUDI type. By default we have only one experim
 a Vector of judiType such as [model, model] to compute gradient for different cases at once.
 """
 get_nexp(x) = 1
-for T in [judiVector, AbstractModel, judiWeights, judiWavefield, PhysicalParameter, Vector{Float32}]
-    @eval get_nexp(v::Vector{<:$T}) = length(v)
-    @eval get_nexp(v::Tuple{N, <:$T}) where N = length(v)
-end   
+# Пока непонятно зачем кол-во экспериметов увеличивается в зависимости от кол-ва параметров модели
+# for T in [judiVector, AbstractModel, judiWeights, judiWavefield, PhysicalParameter, Vector{Float32}]
+#     @eval get_nexp(v::Vector{<:$T}) = length(v)
+#     @eval get_nexp(v::Tuple{N, <:$T}) where N = length(v)
+# end   
 
 # Filter arguments for given task
 """
@@ -141,10 +166,19 @@ Example
     function_value, gradient = fwi_objective(model, source, dobs)
 """
 function fwi_objective(model::MTypes, q::Dtypes, dobs::Dtypes; options=Options(), kw...)
-    n_exp = check_args(model, q, dobs)
-    G = n_exp == 1 ? similar(model.m, model) : [similar(get_exp(model, i).m, get_exp(model, i)) for i=1:n_exp]
+    if is_viscoacoustic(model)
+        # Инициализируем два градиента для вязкоакустики
+        G_vp = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
+        G_q = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
+        G = (G_vp, G_q)  # ← кортеж для накопления
+    else
+        G = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
+    end
+
     f = fwi_objective!(G, model, q, dobs; options=options, kw...)
-    f, G
+
+    # Возвращаем кортеж градиентов для вязкоакустики
+    return f, G
 end
 
 """
@@ -201,8 +235,15 @@ multi_exp_fg!(n::Val{1}, ar...; kw...) = multi_src_fg!(ar...; kw...)
 
 function multi_exp_fg!(n::Val{N}, ar...; kw...) where N
     f = zeros(Float32, N)
-    @sync for i=1:N
-        ai = (get_exp(a, i) for a in ar)
+    G = ar[1]          # Первый аргумент — градиент (может быть кортежем)
+    println("typeof(G): $(typeof(G))")
+    rest = ar[2:end]   # Остальные аргументы (модель, источники, данные)
+    
+    @sync for i = 1:N
+        # Распаковываем ТОЛЬКО остальные аргументы по экспериментам
+        ai_rest = ntuple(j -> get_exp(rest[j], i), length(rest))
+        # Первый аргумент (градиент) передаём как есть для ВСЕХ экспериментов
+        ai = (G, ai_rest...)
         @async f[i] = multi_src_fg!(ai...; kw...)
     end
     sum(f)

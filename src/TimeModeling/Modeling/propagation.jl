@@ -102,7 +102,14 @@ function multi_src_fg!(G, model, q, dobs, dm; options=Options(), ms_func=multi_s
     res = run_and_reduce(ms_func, pool, nsrc, arg_func; kw=kw_func)
     res = update_illum(res, model, :adjoint_born)
     f, g = as_vec(res, Val(options.return_array))
-    G .+= g
+    if G isa Tuple && length(G) == 2 && g isa Tuple && length(g) == 2
+        # Вязкоакустический случай: накапливаем оба градиента отдельно
+        G[1] .+= g[1]
+        G[2] .+= g[2]
+    else
+        # Обычный акустический случай
+        G .+= g
+    end
     return f
 end
 

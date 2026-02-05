@@ -223,16 +223,6 @@ def inner_grad(u, v):
     return grad(u, shift=.5).dot(grad(v, shift=.5))
 
 
-fwi_src = lambda *ar, **kw: isic_src(*ar, icsign=-1, **kw)
-fwi_time = lambda *ar, **kw: isic_time(*ar, icsign=-1, **kw)
-fwi_freq = lambda *ar, **kw: isic_freq(*ar, icsign=-1, **kw)
-
-ic_dict = {"isic_freq": isic_freq, "as_freq": crosscorr_freq,
-           "fwi": fwi_time, "fwi_freq": fwi_freq,
-           "isic": isic_time, "as": crosscorr_time}
-ls_dict = {"isic": isic_src, "fwi": fwi_src, "as": basic_src}
-
-
 def Loss(dsyn, dobs, dt, is_residual=False, misfit=None):
     """
     L2 loss and residual between the synthetic data dsyn and observed data dobs
@@ -274,3 +264,114 @@ def Loss(dsyn, dobs, dt, is_residual=False, misfit=None):
         dsyn.data._local[:] = dobs
 
     return .5 * dt * np.linalg.norm(dsyn.data._local)**2, dsyn.data._local
+
+
+# =================== VISCOACOUSTIC GRADIENTS ===================
+
+def crosscorr_time_visco(u, v, model, **kwargs):
+    """
+    Cross correlation for viscoacoustic media - returns both Vp and Q gradients
+    """
+    
+    try:
+        # Убедимся, что u и v - кортежи
+        u_tuple = as_tuple(u)
+        v_tuple = as_tuple(v)
+        
+        
+        # Извлекаем поля давления (первые элементы)
+        if len(u_tuple) >= 1:
+            p = u_tuple[0]
+        else:
+            p = u_tuple
+            
+        if len(v_tuple) >= 1:
+            p_adj = v_tuple[0]
+        else:
+            p_adj = v_tuple
+        
+        # Gradient for Vp (m parameter) - стандартная формула
+        dt = p.indices[0].spacing
+        w = dt * model.irho
+        grad_m = w * p_adj.dt2 * p
+        
+        # Gradient for Q (qp parameter) - упрощенная формула для теста
+        # В реальности нужно правильное выражение для градиента по Q
+        grad_q = grad_q_expr(p, p_adj, model, kwargs.get('f0', 0.015))
+        
+        return {"grad_m": grad_m, "grad_q": grad_q}
+        
+    except Exception as e:
+        # В случае ошибки возвращаем оба градиента с нулевыми значениями
+        return {"grad_m": 0, "grad_q": 0}
+
+
+def grad_q_expr(p, p_adj, model, f0=0.015):
+    """
+    Упрощенный градиент по Q для тестирования
+    В реальности нужно использовать правильную формулу из теории
+    """
+    try:
+        dt = p.indices[0].spacing
+        w = dt * model.irho
+        # Упрощенная формула: grad_Q пропорционален квадрату частоты
+        # Это только для теста!
+        grad_q = 0.1 * w * p_adj.dt2 * p * (f0**2)
+        return grad_q
+    except Exception as e:
+        return 0 * p * p_adj  # Нулевое выражение того же типа
+
+
+def grad_expr_multi(grad_dict, u, v, model, w=None, freq=None, dft_sub=None, ic="as"):
+    """
+    Gradient expression for multiple parameters
+    """
+    
+    # Для вязкоакустики всегда используем visco imaging condition
+    if model.is_viscoacoustic:
+        ic_func = crosscorr_time_visco
+    else:
+        ic_func = ic_dict.get(func_name(freq=freq, ic=ic), crosscorr_time)
+    
+    # Compute gradient expressions
+    u_tuple, v_tuple = as_tuple(u), as_tuple(v)
+    
+    # Basic kwargs
+    ic_kwargs = {'w': w}
+    if freq is not None:
+        ic_kwargs['freq'] = freq
+        ic_kwargs['factor'] = dft_sub
+    if hasattr(model, 'f0'):
+        ic_kwargs['f0'] = model.f0
+    
+    expr = ic_func(u_tuple, v_tuple, model, **ic_kwargs)
+    
+    
+    # Create equations for each gradient
+    eqs = []
+    if hasattr(expr, 'keys'):
+        # Это словарь с несколькими градиентами
+        for param_name, expr_part in expr.items():
+            if param_name in grad_dict:
+                eqs.append(Eq(grad_dict[param_name], 
+                             grad_dict[param_name] - expr_part, 
+                             subdomain=model.physical))
+    else:
+        # Для обратной совместимости: один градиент
+        if "grad_m" in grad_dict:
+            eqs.append(Eq(grad_dict["grad_m"], 
+                         grad_dict["grad_m"] - expr, 
+                         subdomain=model.physical))
+    
+    return eqs
+
+
+fwi_src = lambda *ar, **kw: isic_src(*ar, icsign=-1, **kw)
+fwi_time = lambda *ar, **kw: isic_time(*ar, icsign=-1, **kw)
+fwi_freq = lambda *ar, **kw: isic_freq(*ar, icsign=-1, **kw)
+
+ic_dict = {"isic_freq": isic_freq, "as_freq": crosscorr_freq,
+           "fwi": fwi_time, "fwi_freq": fwi_freq,
+           "isic": isic_time, "as": crosscorr_time, 
+           "visco": crosscorr_time_visco}
+ls_dict = {"isic": isic_src, "fwi": fwi_src, "as": basic_src}

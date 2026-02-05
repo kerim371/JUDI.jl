@@ -3,6 +3,8 @@
 
 Inplace reduction of y into x.
 """
+@inline single_reduce!(x::Number, y::Number) = x + y  # ← ДОБАВИТЬ ЭТУ СТРОКУ
+
 @inline single_reduce!(x::T, y::T) where T = x .+= y
 
 for T in [judiVector, judiWeights, judiWavefield]

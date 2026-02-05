@@ -3,3 +3,7 @@
 *.jl.mem
 
 /.luarc.json
+src/pysource/__pycache__/
+
+*.pyd
+*.pyc

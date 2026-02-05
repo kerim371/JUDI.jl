@@ -5,7 +5,7 @@ from devito.tools import as_tuple
 from pyrevolve import Revolver
 
 from checkpoint import CheckpointOperator, DevitoCheckpoint
-from propagators import forward, born, gradient, forward_grad
+from propagators import forward, born, gradient, gradient_visco, forward_grad
 from sensitivity import Loss
 from sources import Receiver
 from utils import weight_fun, compute_optalpha, npdot
@@ -287,6 +287,9 @@ def J_adjoint(model, src_coords, wavelet, rec_coords, recin,
     * Frequency compression (on-the-fly DFT)
     * Standard zero lag cross correlation over time
 
+    For viscoacoustic models: returns (grad_vp, grad_q)
+    For other models: returns grad_vp
+
     Parameters
     ----------
     model: Model
@@ -354,6 +357,9 @@ def J_adjoint_freq(model, src_coords, wavelet, rec_coords, recin,
     as a source (i.e data residual). Outputs the gradient with Frequency
     compression (on-the-fly DFT).
 
+    For viscoacoustic models: returns (grad_vp, grad_q)
+    For other models: returns grad_vp
+
     Parameters
     ----------
     model: Model
@@ -401,11 +407,27 @@ def J_adjoint_freq(model, src_coords, wavelet, rec_coords, recin,
     f, residual = Loss(rec, recin, model.critical_dt,
                        is_residual=is_residual, misfit=misfit)
 
-    g, Iv, _ = gradient(model, residual, rec_coords, u, ic=ic,
-                        freq=freq_list, dft_sub=dft_sub, f0=f0, illum=illum, fw=fw)
+    # Process gradient based on model type
+    if model.is_viscoacoustic:
+        g, Iv, _ = gradient_visco(model, residual, rec_coords, u, ic=ic,
+                                freq=freq_list, dft_sub=dft_sub, f0=f0, illum=illum, fw=fw)
+        # g is a tuple (grad_vp, grad_q) for viscoacoustic
+        grad_vp, grad_q = g
+        grad_vp_data = grad_vp.data
+        grad_q_data = grad_q.data
+        is_visco = True
+    else:
+        g, Iv, _ = gradient(model, residual, rec_coords, u, ic=ic,
+                            freq=freq_list, dft_sub=dft_sub, f0=f0, illum=illum, fw=fw)
+        # g is a single gradient for regular models
+        grad_vp_data = g.data
+        grad_q_data = None
+        is_visco = False
+
     if return_obj:
-        return f, g.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
-    return g.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+        # ✅ ИСПРАВЛЕНО: всегда 5 элементов + флаг
+        return f, grad_vp_data, grad_q_data, getattr(Iu, "data", None), getattr(Iv, "data", None), is_visco
+    return grad_vp_data, grad_q_data, getattr(Iu, "data", None), getattr(Iv, "data", None), is_visco
 
 
 def J_adjoint_standard(model, src_coords, wavelet, rec_coords, recin,
@@ -416,6 +438,9 @@ def J_adjoint_standard(model, src_coords, wavelet, rec_coords, recin,
     Adjoint Jacobian (adjoint fo born modeling operator) operator on a shot record
     as a source (i.e data residual). Outputs the gradient with standard
     zero lag cross correlation over time.
+
+    For viscoacoustic models: returns (grad_vp, grad_q)
+    For other models: returns grad_vp
 
     Parameters
     ----------
@@ -452,6 +477,12 @@ def J_adjoint_standard(model, src_coords, wavelet, rec_coords, recin,
     Array
         Adjoint jacobian on the input data (gradient)
     """
+    # Для вязкоакустики используем visco imaging condition
+    if model.is_viscoacoustic:
+        gradient_func = gradient_visco
+    else:
+        gradient_func = gradient
+    
     ffunc = op_fwd_J[born_fwd]
     rec, u, Iu, _ = ffunc(model, src_coords, rec_coords, wavelet, save=True, nlind=nlind,
                           f0=f0, ws=ws, illum=illum, ic=ic,
@@ -461,13 +492,26 @@ def J_adjoint_standard(model, src_coords, wavelet, rec_coords, recin,
     f, residual = Loss(rec, recin, model.critical_dt,
                        is_residual=is_residual, misfit=misfit)
 
-    g, Iv, _ = gradient(model, residual, rec_coords, u, ic=ic,
-                        f0=f0, illum=illum, fw=fw)
+    g, Iv, _ = gradient_func(model, residual, rec_coords, u, ic=ic,
+                             f0=f0, illum=illum, fw=fw)
+    # Process gradient based on model type
+    if model.is_viscoacoustic:
+        # g is a tuple (grad_vp, grad_q) for viscoacoustic
+        grad_vp, grad_q = g
+        # ✅ ИСПРАВЛЕНО: возвращаем плоскую структуру вместо вложенного кортежа
+        grad_vp_data = grad_vp.data
+        grad_q_data = grad_q.data
+        is_visco = True
+    else:
+        # g is a single gradient for regular models
+        grad_vp_data = g.data
+        grad_q_data = None  # Заглушка для совместимости
+        is_visco = False
 
     if return_obj:
-        return f, g.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
-
-    return g.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+        # ✅ ИСПРАВЛЕНО: всегда 5 элементов, последний — флаг вязкоакустики
+        return f, grad_vp_data, grad_q_data, getattr(Iu, "data", None), getattr(Iv, "data", None), is_visco
+    return grad_vp_data, grad_q_data, getattr(Iu, "data", None), getattr(Iv, "data", None), is_visco
 
 
 def J_adjoint_checkpointing(model, src_coords, wavelet, rec_coords, recin,
@@ -477,6 +521,9 @@ def J_adjoint_checkpointing(model, src_coords, wavelet, rec_coords, recin,
     """
     Jacobian (adjoint fo born modeling operator) operator on a shot record
     as a source (i.e data residual). Outputs the gradient with Checkpointing.
+
+    For viscoacoustic models: returns (grad_vp, grad_q)
+    For other models: returns grad_vp
 
     Parameters
     ----------
@@ -524,9 +571,14 @@ def J_adjoint_checkpointing(model, src_coords, wavelet, rec_coords, recin,
     op_f, u, rec_g, kwu = ffunc(model, src_coords, rec_coords, wavelet, fw=fw,
                                 save=False, return_op=True,
                                 ic=ic, nlind=nlind, ws=ws, f0=f0, illum=illum)
-    op, g, kwg = gradient(model, recin, rec_coords, u,
-                          return_op=True, ic=ic, f0=f0, save=False, illum=illum,
-                          fw=fw)
+    if model.is_viscoacoustic:
+        op, g, kwg = gradient_visco(model, recin, rec_coords, u,
+                            return_op=True, ic=ic, f0=f0, save=False, illum=illum,
+                            fw=fw)
+    else:
+        op, g, kwg = gradient(model, recin, rec_coords, u,
+                            return_op=True, ic=ic, f0=f0, save=False, illum=illum,
+                            fw=fw)
 
     nt = wavelet.shape[0]
     rec = Receiver(name='rec', grid=model.grid, ntime=nt, coordinates=rec_coords)
@@ -557,9 +609,19 @@ def J_adjoint_checkpointing(model, src_coords, wavelet, rec_coords, recin,
 
     Iu = getattr(kwu.get("Iu", None), "data", None)
     Iv = getattr(kwg.get("Iv", None), "data", None)
+    
+    # Process gradient based on model type
+    if model.is_viscoacoustic:
+        # g is a tuple (grad_vp, grad_q) for viscoacoustic
+        grad_vp, grad_q = g
+        grad_data = (grad_vp.data, grad_q.data)
+    else:
+        # g is a single gradient for regular models
+        grad_data = g.data
+    
     if return_obj:
-        return f, g.data, Iu, Iv
-    return g.data, Iu, Iv
+        return f, grad_data, Iu, Iv
+    return grad_data, Iu, Iv
 
 
 op_fwd_J = {False: forward, True: born}
