@@ -275,9 +275,10 @@ def isic_visco_time(u, v, model, **kwargs):
     """
     Viscoacoustic QFWI gradient in time domain.
 
-    Practical time-domain approximation for parameters sc0=gamma*c0^{-2}, sQ=Q^{-1}.
-    Includes FWA-inspired weighting for Q-gradient (Yong et al., 2021) so the
-    attenuation update is more sensitive to high-frequency content.
+    Best-practice approximation for flexible-band QFWI:
+    - parameterization: sc0 = gamma*c0^{-2}, sQ = Q^{-1}
+    - local (band-wise) beta proxy to reduce modelling-error forcing
+      from full-spectrum self-consistency assumptions.
     """
     u_tuple = as_tuple(u)
     v_tuple = as_tuple(v)
@@ -296,37 +297,47 @@ def isic_visco_time(u, v, model, **kwargs):
     if sc0 is None:
         sc0 = gamma * model.m
 
-    # Effective-frequency proxy for Re(beta): -(2/pi)log(omega/omega0)
+    # Band-wise effective frequency proxy for Re(beta):
+    # beta(omega) = i - (2/pi)log(omega/omega0)
     f0 = float(kwargs.get('f0', 0.015))
     f_eff = float(kwargs.get('f_eff', f0))
+    if kwargs.get('band', None) is not None:
+        bmin, bmax = kwargs.get('band')
+        f_eff = 0.5 * (float(bmin) + float(bmax))
+
     f0_safe = max(f0, 1e-12)
     f_eff_safe = max(f_eff, 1e-12)
     beta_r = -(2.0 / np.pi) * np.log(f_eff_safe / f0_safe)
-    beta_i = 1.0
-
-    # FWA-inspired weighting (Yong et al.): emphasize higher frequencies for Q
-    q_fwa_power = float(kwargs.get('q_fwa_power', 1.0))
-    q_fwa_weight = (f_eff_safe / f0_safe)**q_fwa_power
 
     w = kwargs.get('w') or p.indices[0].spacing * model.irho
     ics = kwargs.get('icsign', 0)
 
+    # Core components
     cross_term = w * p_adj.dt2 * p
     phase_term = w * (p_adj * r.dt - r * p_adj.dt) if has_memory else w * p_adj * p.dt
 
-    # beta * cross ≈ Re(beta)*cross + Im(beta)*phase
-    beta_cross = beta_r * cross_term + beta_i * phase_term - ics * inner_grad(p, p_adj)
+    # beta * cross ≈ Re(beta)*cross + Im(beta)*phase, Im(beta)=1
+    beta_cross = beta_r * cross_term + phase_term - ics * inner_grad(p, p_adj)
 
     grad_m = (cross_term + sQ * beta_cross) / gamma
-    grad_q = q_fwa_weight * sc0 * beta_cross
+    grad_q = sc0 * beta_cross
+
+    # Optional weak regularization term (paper-inspired low-Q control)
+    alpha_q_reg = kwargs.get('alpha_q_reg', 0.0)
+    if alpha_q_reg != 0:
+        grad_q = grad_q + alpha_q_reg * sQ
 
     return {"grad_m": grad_m, "grad_q": grad_q}
 
 
 def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
     """
-    Frequency-domain viscoacoustic QFWI gradient for (sc0, sQ) in the KF model.
-    Uses KF beta(omega) and optional FWA-inspired weighting for Q updates.
+    Frequency-domain viscoacoustic QFWI gradient for (sc0, sQ) in KF model.
+
+    Flexible-band best practice:
+    - gradients are built from the active band frequencies only
+    - optional band-wise reference frequency (f0_band) to mitigate modelling errors
+      when attenuation physics are uncertain.
     """
     u_tuple = as_tuple(u)
     v_tuple = as_tuple(v)
@@ -349,27 +360,39 @@ def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
     f, _ = frequencies(freq, fdim=fdim)
     omega = 2 * np.pi * f
 
+    # Reference frequency strategy:
+    # - if flexible_band=True and numeric freq list is provided: use band center
+    # - otherwise use provided f0
     f0 = kwargs.get('f0', None)
+    if kwargs.get('flexible_band', False) and freq is not None:
+        try:
+            fvals = np.asarray(freq, dtype=np.float64).reshape(-1)
+            if fvals.size > 0:
+                f0 = 0.5 * (float(np.min(fvals)) + float(np.max(fvals)))
+        except Exception:
+            pass
+
     if f0 is None:
         raise ValueError("`f0` must be provided for visco frequency-domain gradient.")
 
     omega0 = 2 * np.pi * float(f0)
     omega_t = omega * tsave * factor * time.spacing
 
-    # β(ω) = i - 2/pi * log(ω/ω0), stabilized around ω=0
+    # beta(omega) = i - 2/pi*log(omega/omega0), stabilized near omega=0
     omega_safe = omega + 1e-12 * omega0
     beta = 1j - (2.0 / np.pi) * log(omega_safe / omega0)
     w = -(omega**2) / time.symbolic_max
-
-    # FWA-inspired weighting to enhance attenuation sensitivity at higher frequencies
-    q_fwa_power = kwargs.get('q_fwa_power', 1.0)
-    q_fwa_weight = (omega_safe / omega0)**q_fwa_power
 
     idftu = p * exp(1j * omega_t)
     cross = w * idftu * p_adj
 
     grad_m = (1.0 / gamma) * (1 + beta * sQ) * cross
-    grad_q = q_fwa_weight * (beta * sc0) * cross
+    grad_q = (beta * sc0) * cross
+
+    # Optional weak regularization term (paper-inspired low-Q control)
+    alpha_q_reg = kwargs.get('alpha_q_reg', 0.0)
+    if alpha_q_reg != 0:
+        grad_q = grad_q + alpha_q_reg * sQ
 
     return {"grad_m": grad_m, "grad_q": grad_q}
 
