@@ -1,7 +1,7 @@
 import numpy as np
 from sympy import exp
 
-from devito import Eq, grad
+from devito import Eq, grad, div
 from devito.tools import as_tuple
 
 from fields import frequencies
@@ -536,15 +536,19 @@ def grad_expr_multi(grad_dict, u, v, model, w=None, freq=None, dft_sub=None, ic=
     
     Handles both acoustic and viscoacoustic cases with proper parameter separation.
     """
-    # For viscoacoustic models always use visco imaging condition
-    ic_func = ic_dict[func_name(freq=freq, ic=ic, is_viscoacoustic=model.is_viscoacoustic)]
+    # Elastic gradients are computed for Lamé parameters directly.
+    if model.is_elastic:
+        ic_func = elastic_ic_dict.get(ic, elastic_crosscorr_time)
+    else:
+        # For viscoacoustic models always use visco imaging condition
+        ic_func = ic_dict[func_name(freq=freq, ic=ic, is_viscoacoustic=model.is_viscoacoustic)]
     
     # Compute gradient expressions
     u_tuple, v_tuple = as_tuple(u), as_tuple(v)
     
     # Basic kwargs
     ic_kwargs = {'w': w}
-    if freq is not None:
+    if freq is not None and not model.is_elastic:
         ic_kwargs['freq'] = freq
         ic_kwargs['factor'] = dft_sub
     if hasattr(model, 'f0'):
@@ -571,6 +575,44 @@ def grad_expr_multi(grad_dict, u, v, model, w=None, freq=None, dft_sub=None, ic=
     return eqs
 
 
+def _elastic_strain(vf):
+    try:
+        return grad(vf) + grad(vf).transpose(inner=False)
+    except TypeError:
+        return grad(vf) + grad(vf).T
+
+
+def elastic_crosscorr_time(u, v, model, **kwargs):
+    """
+    Elastic zero-lag imaging condition for Lamé parameters.
+
+    Returns a dictionary with gradients wrt lambda and mu.
+    """
+    u_tuple = as_tuple(u)
+    v_tuple = as_tuple(v)
+    vf = u_tuple[0]
+    tau_adj = v_tuple[1]
+
+    w = kwargs.get('w') or model.grid.time_dim.spacing
+    ndim = model.grid.dim
+
+    div_v = div(vf)
+    tau_trace = sum(tau_adj[i, i] for i in range(ndim))
+
+    strain = _elastic_strain(vf)
+    shear_corr = sum(strain[i, j] * tau_adj[i, j]
+                     for i in range(ndim) for j in range(ndim))
+
+    return {
+        "grad_lam": w * div_v * tau_trace,
+        "grad_mu": w * shear_corr,
+    }
+
+
+elastic_fwi_time = lambda *ar, **kw: elastic_crosscorr_time(*ar, **kw)
+elastic_isic_time = lambda *ar, **kw: elastic_crosscorr_time(*ar, **kw)
+
+
 fwi_src = lambda *ar, **kw: isic_src(*ar, icsign=-1, **kw)
 fwi_time = lambda *ar, **kw: isic_time(*ar, icsign=-1, **kw)
 fwi_freq = lambda *ar, **kw: isic_freq(*ar, icsign=-1, **kw)
@@ -584,6 +626,13 @@ fwi_visco_src = lambda *ar, **kw: isic_visco_src(*ar, icsign=-1, **kw)
 rtm_visco_time = lambda *ar, **kw: isic_visco_time(*ar, icsign=1, **kw)
 rtm_visco_freq = lambda *ar, **kw: isic_visco_freq(*ar, icsign=1, **kw)
 rtm_visco_src = lambda *ar, **kw: isic_visco_src(*ar, icsign=1, **kw)
+
+elastic_ic_dict = {
+    "as": elastic_crosscorr_time,
+    "fwi": elastic_fwi_time,
+    "isic": elastic_isic_time,
+    "rtm": elastic_crosscorr_time,
+}
 
 ic_dict = {"isic_freq": isic_freq, 
            "as_freq": crosscorr_freq,

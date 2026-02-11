@@ -19,6 +19,25 @@ function is_viscoacoustic(model::NTuple{N, <:AbstractModel}) where N
     return any(is_viscoacoustic, model)
 end
 
+function is_elastic(model::AbstractModel)
+    return hasfield(typeof(model), :lam) && hasfield(typeof(model), :mu)
+end
+
+function is_elastic(model::Vector{<:AbstractModel})
+    return any(is_elastic, model)
+end
+
+function is_elastic(model::NTuple{N, <:AbstractModel}) where N
+    return any(is_elastic, model)
+end
+
+_model_dtype(model::AbstractModel) = begin
+    p = _params(model)[1][2]
+    isa(p, PhysicalParameter) ? eltype(p) : typeof(p)
+end
+_model_dtype(model::Vector{<:AbstractModel}) = _model_dtype(first(model))
+_model_dtype(model::NTuple{N, <:AbstractModel}) where N = _model_dtype(first(model))
+
 function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, dm, options::JUDIOptions;
                       nlind::Bool=false, lin::Bool=false, misfit::Function=mse, illum::Bool=false,
                       data_precon=nothing, model_precon=LinearAlgebra.I)
@@ -87,16 +106,21 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     end
 
     @juditime "Remove padding from gradient" begin
-        # ✅ Для вязкоакустики: градиенты в отдельных элементах argout[2] и argout[3]
         if JUDI.is_viscoacoustic(model_full) && length(argout) >= 4
             grad_vp = PhysicalParameter(remove_padding(argout[2], modelPy.padsizes; true_adjoint=options.sum_padding),
                                         spacing(model), origin(model))
             grad_q = PhysicalParameter(remove_padding(argout[3], modelPy.padsizes; true_adjoint=options.sum_padding),
-                                    spacing(model), origin(model))
-            grad = (grad_vp, grad_q)  # ← кортеж из двух градиентов
+                                       spacing(model), origin(model))
+            grad = (grad_vp, grad_q)
+        elseif JUDI.is_elastic(model_full) && length(argout) >= 4
+            grad_lam = PhysicalParameter(remove_padding(argout[2], modelPy.padsizes; true_adjoint=options.sum_padding),
+                                         spacing(model), origin(model))
+            grad_mu = PhysicalParameter(remove_padding(argout[3], modelPy.padsizes; true_adjoint=options.sum_padding),
+                                        spacing(model), origin(model))
+            grad = (grad_lam, grad_mu)
         else
             grad = PhysicalParameter(remove_padding(argout[2], modelPy.padsizes; true_adjoint=options.sum_padding),
-                                    spacing(model), origin(model))
+                                     spacing(model), origin(model))
         end
     end
 
@@ -166,13 +190,17 @@ Example
     function_value, gradient = fwi_objective(model, source, dobs)
 """
 function fwi_objective(model::MTypes, q::Dtypes, dobs::Dtypes; options=Options(), kw...)
+    T = _model_dtype(model)
     if is_viscoacoustic(model)
-        # Инициализируем два градиента для вязкоакустики
-        G_vp = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
-        G_q = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
-        G = (G_vp, G_q)  # ← кортеж для накопления
+        G_vp = PhysicalParameter(zeros(T, size(model)), spacing(model), origin(model))
+        G_q = PhysicalParameter(zeros(T, size(model)), spacing(model), origin(model))
+        G = (G_vp, G_q)
+    elseif is_elastic(model)
+        G_lam = PhysicalParameter(zeros(T, size(model)), spacing(model), origin(model))
+        G_mu = PhysicalParameter(zeros(T, size(model)), spacing(model), origin(model))
+        G = (G_lam, G_mu)
     else
-        G = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
+        G = PhysicalParameter(zeros(T, size(model)), spacing(model), origin(model))
     end
 
     f = fwi_objective!(G, model, q, dobs; options=options, kw...)
@@ -193,13 +221,17 @@ Example
     function_value, gradient = lsrtm_objective(model, source, dobs, dm)
 """
 function lsrtm_objective(model::MTypes, q::Dtypes, dobs::Dtypes, dm::dmTypes; options=Options(), nlind=false, kw...)
+    T = _model_dtype(model)
     if is_viscoacoustic(model)
-        # Инициализируем два градиента для вязкоакустики
-        G_vp = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
-        G_q = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
-        G = (G_vp, G_q)  # ← кортеж для накопления
+        G_vp = PhysicalParameter(zeros(T, size(model)), spacing(model), origin(model))
+        G_q = PhysicalParameter(zeros(T, size(model)), spacing(model), origin(model))
+        G = (G_vp, G_q)
+    elseif is_elastic(model)
+        G_lam = PhysicalParameter(zeros(T, size(model)), spacing(model), origin(model))
+        G_mu = PhysicalParameter(zeros(T, size(model)), spacing(model), origin(model))
+        G = (G_lam, G_mu)
     else
-        G = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
+        G = PhysicalParameter(zeros(T, size(model)), spacing(model), origin(model))
     end
     f = lsrtm_objective!(G, model, q, dobs, dm; options=options, nlind=nlind, kw...)
     f, G
