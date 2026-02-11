@@ -90,6 +90,18 @@ This is the main multi-source wrapper function for `fwi_objective` and `lsrtm_ob
 Computes the misifit and gradient (LSRTM if `lin` else FWI) for the given `q` source and `dobs` and
 perturbation `dm`.
 """
+@inline _collect_physical_parameters!(acc::Vector{PhysicalParameter}, x) = acc
+@inline function _collect_physical_parameters!(acc::Vector{PhysicalParameter}, x::PhysicalParameter)
+    push!(acc, x)
+    return acc
+end
+@inline function _collect_physical_parameters!(acc::Vector{PhysicalParameter}, x::Tuple)
+    for xi in x
+        _collect_physical_parameters!(acc, xi)
+    end
+    return acc
+end
+
 function multi_src_fg!(G, model, q, dobs, dm; options=Options(), ms_func=multi_src_fg, kw...)
     # Number of sources and init result
     nsrc = try q.nsrc catch; dobs.nsrc end
@@ -101,37 +113,28 @@ function multi_src_fg!(G, model, q, dobs, dm; options=Options(), ms_func=multi_s
     # Distribute source
     res = run_and_reduce(ms_func, pool, nsrc, arg_func; kw=kw_func)
     res = update_illum(res, model, :adjoint_born)
-    
+
     f = res[1]
-    
-    # ✅ ИСПРАВЛЕНО: надёжное извлечение градиентов для ВСЕХ режимов вязкоакустики
+
     if G isa Tuple && length(G) == 2
-        # Случай 1: плоская структура (fval, grad_vp, grad_q, ...) — 5+ элементов
-        if length(res) >= 3 && res[2] isa PhysicalParameter && res[3] isa PhysicalParameter
-            G[1] .+= res[2]  # grad_vp
-            G[2] .+= res[3]  # grad_q
-        # Случай 2: вложенная структура (fval, (grad_vp, grad_q), ...) — 2+ элементов
-        elseif res[2] isa Tuple && length(res[2]) == 2
-            G[1] .+= res[2][1]
-            G[2] .+= res[2][2]
-        # Случай 3: режим RTM с плоской структурой (grad_vp, grad_q, ...) — 4 элемента
-        elseif length(res) >= 4 && res[1] isa PhysicalParameter && res[2] isa PhysicalParameter
-            G[1] .+= res[1]
-            G[2] .+= res[2]
-            f = 0.0f0  # RTM не возвращает fval
+        # Robust extraction of visco gradients from any nested return structure.
+        grads = PhysicalParameter[]
+        _collect_physical_parameters!(grads, res)
+
+        if length(grads) >= 2
+            G[1] .+= grads[1]
+            G[2] .+= grads[2]
+        elseif length(grads) == 1
+            @warn "Only one visco gradient was found; Q-gradient left unchanged" maxlog=1 _id=:visco_grad_struct
+            G[1] .+= grads[1]
         else
-            # Fallback с диагностикой
-            @warn "Неожиданная структура градиентов для вязкоакустики" maxlog=1 _id=:visco_grad_struct
-            @warn "res type: $(typeof(res)), length: $(length(res))" maxlog=1 _id=:visco_grad_struct
-            if length(res) >= 2
-                G[1] .+= res[2]  # Накапливаем первый градиент как есть
-            end
+            @warn "No PhysicalParameter gradients found in visco result structure" maxlog=1 _id=:visco_grad_struct
         end
     else
-        # Обычная акустика: один градиент
+        # Acoustic / single-parameter case
         G .+= res[2]
     end
-    
+
     return f
 end
 
