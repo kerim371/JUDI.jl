@@ -216,21 +216,21 @@ def adjoint_born_op(p_params, tti, visco, elas, space_order, fw, spacing, pt_rec
     # Set up PDE expression
     pde, extra = wave_kernel(model, v, fw=False, f0=Constant('f0'))
 
-    # Setup gradient(s) - ВОТ ЭТО ИЗМЕНЯЕМ!
+    # Setup gradient(s)
     if visco:
-        # Для вязкоакустики: два градиента
         gradm = Function(name="gradm", grid=model.grid)
         gradq = Function(name="gradq", grid=model.grid)
         grad_dict = {"grad_m": gradm, "grad_q": gradq}
-        # Используем grad_expr_multi для нескольких градиентов
-        g_expr = grad_expr_multi(grad_dict, u, v, model, w=w, freq=freq_list,
-                                 dft_sub=dft_sub, ic=ic)
+    elif elas:
+        gradlam = Function(name="gradlam", grid=model.grid)
+        gradmu = Function(name="gradmu", grid=model.grid)
+        grad_dict = {"grad_lam": gradlam, "grad_mu": gradmu}
     else:
-        # Для обычных моделей: один градиент
         gradm = Function(name="gradm", grid=model.grid)
         grad_dict = {"grad_m": gradm}
-        g_expr = grad_expr_multi(grad_dict, u, v, model, w=w, freq=freq_list,
-                                 dft_sub=dft_sub, ic=ic)
+
+    g_expr = grad_expr_multi(grad_dict, u, v, model, w=w, freq=freq_list,
+                             dft_sub=dft_sub, ic=ic)
 
     # Illumination
     Ieq = illumexpr(v, illum)

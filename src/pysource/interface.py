@@ -413,18 +413,23 @@ def J_adjoint_freq(model, src_coords, wavelet, rec_coords, recin,
     else:
         g, Iv, _ = gradient(model, residual, rec_coords, u, ic=ic,
                             freq=freq_list, dft_sub=dft_sub, f0=f0, illum=illum, fw=fw)
-        grad_vp = g
 
     if return_obj:
         if model.is_viscoacoustic:
             return f, grad_vp.data, grad_q.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+        elif model.is_elastic:
+            grad_lam, grad_mu = g
+            return f, grad_lam.data, grad_mu.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
         else:
-            return f, grad_vp.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+            return f, g.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
     else:
         if model.is_viscoacoustic:
             return grad_vp.data, grad_q.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+        elif model.is_elastic:
+            grad_lam, grad_mu = g
+            return grad_lam.data, grad_mu.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
         else:
-            return grad_vp.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+            return g.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
 
 
 def J_adjoint_standard(model, src_coords, wavelet, rec_coords, recin,
@@ -487,22 +492,23 @@ def J_adjoint_standard(model, src_coords, wavelet, rec_coords, recin,
     g, Iv, _ = gradient_func(model, residual, rec_coords, u, ic=ic,
                              f0=f0, illum=illum, fw=fw)
     
-    # ✅ ПЛОСКАЯ СТРУКТУРА БЕЗ ВЛОЖЕННЫХ КОРТЕЖЕЙ
     if return_obj:
-        # FWI mode: (fval, grad_vp, grad_q, Iu, Iv) — 5 элементов для вязкоакустики
         if model.is_viscoacoustic:
             grad_vp, grad_q = g
             return f, grad_vp.data, grad_q.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+        elif model.is_elastic:
+            grad_lam, grad_mu = g
+            return f, grad_lam.data, grad_mu.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
         else:
             return f, g.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
     else:
-        # RTM mode: ПЛОСКАЯ структура (без вложенных кортежей!)
         if model.is_viscoacoustic:
             grad_vp, grad_q = g
-            # 4 элемента: grad_vp, grad_q, Iu, Iv
             return grad_vp.data, grad_q.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
+        elif model.is_elastic:
+            grad_lam, grad_mu = g
+            return grad_lam.data, grad_mu.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
         else:
-            # 3 элемента: grad, Iu, Iv
             return g.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
 
 
@@ -594,21 +600,24 @@ def J_adjoint_checkpointing(model, src_coords, wavelet, rec_coords, recin,
     Iu = getattr(kwu.get("Iu", None), "data", None)
     Iv = getattr(kwg.get("Iv", None), "data", None)
     
-    if model.is_viscoacoustic:
-        grad_vp, grad_q = g
-    else:
-        grad_vp = g
-
     if return_obj:
         if model.is_viscoacoustic:
+            grad_vp, grad_q = g
             return f, grad_vp.data, grad_q.data, Iu, Iv
+        elif model.is_elastic:
+            grad_lam, grad_mu = g
+            return f, grad_lam.data, grad_mu.data, Iu, Iv
         else:
-            return f, grad_vp.data, Iu, Iv
+            return f, g.data, Iu, Iv
     else:
         if model.is_viscoacoustic:
+            grad_vp, grad_q = g
             return grad_vp.data, grad_q.data, Iu, Iv
+        elif model.is_elastic:
+            grad_lam, grad_mu = g
+            return grad_lam.data, grad_mu.data, Iu, Iv
         else:
-            return grad_vp.data, Iu, Iv
+            return g.data, Iu, Iv
 
 op_fwd_J = {False: forward, True: born}
 
