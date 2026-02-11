@@ -11,7 +11,10 @@ except ImportError:
 
 def src_rec(model, u, src_coords=None, rec_coords=None, wavelet=None, nt=None):
     nt = nt or wavelet.shape[0]
-    namef = as_tuple(u)[1][0].name if model.is_elastic else as_tuple(u)[0].name
+    # For elastic fields, use the parent tensor name (e.g., ``tau_v``) instead
+    # of a tensor component name (e.g., ``tau_v_xx``). Component-based names can
+    # create malformed sparse-injection symbols in generated C code.
+    namef = as_tuple(u)[1].name if model.is_elastic else as_tuple(u)[0].name
     src = None
     if src_coords is not None:
         if isinstance(wavelet, PointSource):
