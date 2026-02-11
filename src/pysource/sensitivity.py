@@ -522,6 +522,11 @@ fwi_src = lambda *ar, **kw: isic_src(*ar, icsign=-1, **kw)
 fwi_time = lambda *ar, **kw: isic_time(*ar, icsign=-1, **kw)
 fwi_freq = lambda *ar, **kw: isic_freq(*ar, icsign=-1, **kw)
 
+# For classical adjoint-state (no ISIC correction): icsign = 0
+as_visco_time = lambda *ar, **kw: isic_visco_time(*ar, icsign=0, **kw)
+as_visco_freq = lambda *ar, **kw: isic_visco_freq(*ar, icsign=0, **kw)
+as_visco_src = lambda *ar, **kw: isic_visco_src(*ar, icsign=0, **kw)
+
 # For FWI (minimization): icsign = -1
 fwi_visco_time = lambda *ar, **kw: isic_visco_time(*ar, icsign=-1, **kw)
 fwi_visco_freq = lambda *ar, **kw: isic_visco_freq(*ar, icsign=-1, **kw)
@@ -540,6 +545,8 @@ ic_dict = {"isic_freq": isic_freq,
            "as": crosscorr_time, 
            "isic_visco": isic_visco_time,
            "isic_visco_freq": isic_visco_freq,
+           "as_visco": as_visco_time,
+           "as_visco_freq": as_visco_freq,
            "fwi_visco": fwi_visco_time,
            "fwi_visco_freq": fwi_visco_freq,
            "rtm_visco": rtm_visco_time,
@@ -548,5 +555,6 @@ ls_dict = {"isic": isic_src,
            "fwi": fwi_src, 
            "as": basic_src,
            "isic_visco": isic_visco_src,
+           "as_visco": as_visco_src,
            "fwi_visco": fwi_visco_src,
            "rtm_visco": rtm_visco_src}
