@@ -275,13 +275,9 @@ def isic_visco_time(u, v, model, **kwargs):
     """
     Viscoacoustic QFWI gradient in time domain.
 
-    Practical time-domain approximation of equations (6)-(8) from
-    Keating & Innanen (2019) for parameters:
-      sc0 = gamma * c0^{-2}, sQ = Q^{-1}
-
-    The imaginary part of beta(omega) is represented through the phase-shifted
-    pressure/memory correlation. The logarithmic real part is approximated with
-    an effective frequency ratio log(f_eff / f0).
+    Practical time-domain approximation for parameters sc0=gamma*c0^{-2}, sQ=Q^{-1}.
+    Includes FWA-inspired weighting for Q-gradient (Yong et al., 2021) so the
+    attenuation update is more sensitive to high-frequency content.
     """
     u_tuple = as_tuple(u)
     v_tuple = as_tuple(v)
@@ -308,6 +304,10 @@ def isic_visco_time(u, v, model, **kwargs):
     beta_r = -(2.0 / np.pi) * np.log(f_eff_safe / f0_safe)
     beta_i = 1.0
 
+    # FWA-inspired weighting (Yong et al.): emphasize higher frequencies for Q
+    q_fwa_power = float(kwargs.get('q_fwa_power', 1.0))
+    q_fwa_weight = (f_eff_safe / f0_safe)**q_fwa_power
+
     w = kwargs.get('w') or p.indices[0].spacing * model.irho
     ics = kwargs.get('icsign', 0)
 
@@ -318,15 +318,15 @@ def isic_visco_time(u, v, model, **kwargs):
     beta_cross = beta_r * cross_term + beta_i * phase_term - ics * inner_grad(p, p_adj)
 
     grad_m = (cross_term + sQ * beta_cross) / gamma
-    grad_q = sc0 * beta_cross
+    grad_q = q_fwa_weight * sc0 * beta_cross
 
     return {"grad_m": grad_m, "grad_q": grad_q}
 
 
 def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
     """
-    Frequency-domain viscoacoustic QFWI gradient implementing equations (6)-(8)
-    for (sc0, sQ) in the KF model.
+    Frequency-domain viscoacoustic QFWI gradient for (sc0, sQ) in the KF model.
+    Uses KF beta(omega) and optional FWA-inspired weighting for Q updates.
     """
     u_tuple = as_tuple(u)
     v_tuple = as_tuple(v)
@@ -361,11 +361,15 @@ def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
     beta = 1j - (2.0 / np.pi) * log(omega_safe / omega0)
     w = -(omega**2) / time.symbolic_max
 
+    # FWA-inspired weighting to enhance attenuation sensitivity at higher frequencies
+    q_fwa_power = kwargs.get('q_fwa_power', 1.0)
+    q_fwa_weight = (omega_safe / omega0)**q_fwa_power
+
     idftu = p * exp(1j * omega_t)
     cross = w * idftu * p_adj
 
     grad_m = (1.0 / gamma) * (1 + beta * sQ) * cross
-    grad_q = (beta * sc0) * cross
+    grad_q = q_fwa_weight * (beta * sc0) * cross
 
     return {"grad_m": grad_m, "grad_q": grad_q}
 
