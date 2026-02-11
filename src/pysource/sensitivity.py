@@ -270,80 +270,6 @@ def Loss(dsyn, dobs, dt, is_residual=False, misfit=None):
 # =================== QFWI VISCO GRADIENTS ===================
 
 
-def crosscorr_visco_time(u, v, model, **kwargs):
-    """
-    Classical adjoint-state viscoacoustic gradient in time domain (no ISIC term).
-
-    Returns both gradients for (sc0, sQ) so that `IC="as"` on visco models
-    does not leave the attenuation gradient empty.
-    """
-    u_tuple = as_tuple(u)
-    v_tuple = as_tuple(v)
-
-    p = u_tuple[0]
-    p_adj = v_tuple[0]
-    has_memory = len(u_tuple) > 1 and model.is_viscoacoustic
-    r = u_tuple[1] if has_memory else None
-
-    gamma = kwargs.get('gamma', 1e6)
-    sQ = kwargs.get('sQ', getattr(model, 'sQ', None))
-    if sQ is None:
-        sQ = 1.0 / model.qp if hasattr(model, 'qp') else 0.0
-
-    sc0 = kwargs.get('sc0', getattr(model, 'sc0', None))
-    if sc0 is None:
-        sc0 = gamma * model.m
-
-    w = kwargs.get('w') or p.indices[0].spacing * model.irho
-
-    cross_term = w * p_adj.dt2 * p
-    phase_term = w * (p_adj * r.dt - r * p_adj.dt) if has_memory else w * p_adj * p.dt
-
-    grad_m = (cross_term + sQ * phase_term) / gamma
-    grad_q = sc0 * phase_term
-    return {"grad_m": grad_m, "grad_q": grad_q}
-
-
-def crosscorr_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
-    """
-    Classical adjoint-state viscoacoustic gradient in frequency domain (no ISIC term).
-    """
-    u_tuple = as_tuple(u)
-    v_tuple = as_tuple(v)
-
-    p = u_tuple[0]
-    p_adj = v_tuple[0]
-
-    gamma = kwargs.get('gamma', 1e6)
-    sQ = kwargs.get('sQ', getattr(model, 'sQ', None))
-    if sQ is None:
-        sQ = 1.0 / model.qp if hasattr(model, 'qp') else 0.0
-
-    sc0 = kwargs.get('sc0', getattr(model, 'sc0', None))
-    if sc0 is None:
-        sc0 = gamma * model.m
-
-    time = model.grid.time_dim
-    tsave, factor = sub_time(time, dft_sub)
-    fdim = as_tuple(u)[0][0].dimensions[0]
-    f, _ = frequencies(freq, fdim=fdim)
-    omega = 2 * np.pi * f
-
-    # User-defined reference frequency (f0) for KF dispersion law
-    f0 = kwargs.get('f0', None)
-    if f0 is None:
-        raise ValueError("`f0` must be provided for visco frequency-domain gradient.")
-
-    omega0 = 2 * np.pi * float(f0)
-    omega_t = omega * tsave * factor * time.spacing
-
-    beta = 1j - (2.0 / np.pi) * log(omega / omega0)
-    w = -(omega**2) / time.symbolic_max
-    cross = w * p * exp(1j * omega_t) * p_adj
-
-    grad_m = (1.0 / gamma) * (1 + beta * sQ) * cross
-    grad_q = (beta * sc0) * cross
-    return {"grad_m": grad_m, "grad_q": grad_q}
 
 def isic_visco_time(u, v, model, **kwargs):
     """
@@ -573,10 +499,10 @@ fwi_src = lambda *ar, **kw: isic_src(*ar, icsign=-1, **kw)
 fwi_time = lambda *ar, **kw: isic_time(*ar, icsign=-1, **kw)
 fwi_freq = lambda *ar, **kw: isic_freq(*ar, icsign=-1, **kw)
 
-# For classical adjoint-state: cross-correlation visco gradients
-as_visco_time = crosscorr_visco_time
-as_visco_freq = crosscorr_visco_freq
-as_visco_src = basic_src
+# For viscoacoustic AS path: reuse visco time/freq/source implementations
+as_visco_time = isic_visco_time
+as_visco_freq = isic_visco_freq
+as_visco_src = isic_visco_src
 
 # For FWI (minimization): icsign = -1
 fwi_visco_time = lambda *ar, **kw: isic_visco_time(*ar, icsign=-1, **kw)
