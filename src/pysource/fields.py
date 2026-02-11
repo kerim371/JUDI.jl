@@ -48,9 +48,11 @@ def wavefield(model, space_order, save=False, nt=None, fw=True, name='', t_sub=1
                          space_order=space_order, save=nsave)
         return (u, v)
     elif model.is_elastic:
-        v = VectorTimeFunction(name="v", grid=model.grid, time_order=1,
+        vname = name if name else ("u" if fw else "v")
+        tname = f"tau_{vname}"
+        v = VectorTimeFunction(name=vname, grid=model.grid, time_order=1,
                                space_order=space_order, save=Buffer(1))
-        tau = TensorTimeFunction(name="tau", grid=model.grid, time_order=1,
+        tau = TensorTimeFunction(name=tname, grid=model.grid, time_order=1,
                                  space_order=space_order, save=Buffer(1))
         return (v, tau)
     else:
