@@ -1,5 +1,5 @@
 import numpy as np
-from sympy import exp, log
+from sympy import exp, log, sqrt, conjugate
 
 from devito import Eq, grad
 from devito.tools import as_tuple
@@ -322,6 +322,15 @@ def isic_visco_time(u, v, model, **kwargs):
     grad_m = (cross_term + sQ * beta_cross) / gamma
     grad_q = sc0 * beta_cross
 
+    # Optional pseudo-Hessian diagonal preconditioning (Yong et al., 2024, App. A)
+    # Pi ~ sqrt( \int ( (∂A/∂mi) w )^2 dt )
+    if kwargs.get('hessian_precond', True):
+        precond_eps = kwargs.get('precond_eps', 1e-12)
+        Pm = sqrt(precond_eps + cross_term * cross_term)
+        Pq = sqrt(precond_eps + beta_cross * beta_cross)
+        grad_m = grad_m / Pm
+        grad_q = grad_q / Pq
+
     # Optional weak regularization term (paper-inspired low-Q control)
     alpha_q_reg = kwargs.get('alpha_q_reg', 0.0)
     if alpha_q_reg != 0:
@@ -388,6 +397,16 @@ def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
 
     grad_m = (1.0 / gamma) * (1 + beta * sQ) * cross
     grad_q = (beta * sc0) * cross
+
+    # Optional pseudo-Hessian diagonal preconditioning (Yong et al., 2024, App. A)
+    if kwargs.get('hessian_precond', True):
+        precond_eps = kwargs.get('precond_eps', 1e-12)
+        gm_src = (1 + beta * sQ) * cross
+        gq_src = (beta * sc0) * cross
+        Pm = sqrt(precond_eps + gm_src * conjugate(gm_src))
+        Pq = sqrt(precond_eps + gq_src * conjugate(gq_src))
+        grad_m = grad_m / Pm
+        grad_q = grad_q / Pq
 
     # Optional weak regularization term (paper-inspired low-Q control)
     alpha_q_reg = kwargs.get('alpha_q_reg', 0.0)
