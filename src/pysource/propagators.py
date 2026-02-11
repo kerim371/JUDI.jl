@@ -121,7 +121,7 @@ def gradient(model, residual, rcv_coords, u, return_op=False, fw=True,
     # Create operator and run
     op = adjoint_born_op(model.physical_parameters, model.is_tti, model.is_viscoacoustic,
                          model.is_elastic, space_order, fw, model.spacing,
-                         rcv_coords is not None, model.fs, w, save, t_sub, nfreq(freq),
+                         rcv_coords is not None, model.fs, w, save, t_sub, f0, nfreq(freq),
                          dft_sub, ic, illum)
 
     # Update kwargs
@@ -171,7 +171,7 @@ def gradient_visco(model, residual, rcv_coords, u, return_op=False, fw=True,
     src, _ = src_rec(model, v, src_coords=rcv_coords, wavelet=residual)
     op = adjoint_born_op(model.physical_parameters, model.is_tti, model.is_viscoacoustic,
                          model.is_elastic, space_order, fw, model.spacing,
-                         rcv_coords is not None, model.fs, w, save, t_sub, nfreq(freq),
+                         rcv_coords is not None, model.fs, w, save, t_sub, f0, nfreq(freq),
                          dft_sub, ic, illum)
     kw = base_kwargs(model.critical_dt)
     f, _ = frequencies(freq)
@@ -300,7 +300,7 @@ def forward_grad(model, src_coords, rcv_coords, wavelet, v,
 
     # Setup gradient wrt m
     gradm = Function(name="gradm", grid=model.grid)
-    g_expr = grad_expr(gradm, v, u, model, w=w, ic=ic, freq=freq)
+    g_expr = grad_expr(gradm, v, u, model, w=w, ic=ic, f0=f0, freq=freq)
 
     # Create operator and run
     subs = model.spacing_map

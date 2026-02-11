@@ -25,7 +25,7 @@ def func_name(freq=None, ic="as", is_viscoacoustic=False):
             return "%s_%s" % (ic, "freq")
 
 
-def grad_expr(gradm, u, v, model, w=None, freq=None, dft_sub=None, ic="as"):
+def grad_expr(gradm, u, v, model, w=None, f0=0.015, freq=None, dft_sub=None, ic="as"):
     """
     Gradient update stencil
 
@@ -48,7 +48,7 @@ def grad_expr(gradm, u, v, model, w=None, freq=None, dft_sub=None, ic="as"):
     """
     ic_func = ic_dict[func_name(freq=freq, ic=ic, is_viscoacoustic=model.is_viscoacoustic)]
     u, v = as_tuple(u), as_tuple(v)
-    expr = ic_func(u, v, model, freq=freq, factor=dft_sub, w=w)
+    expr = ic_func(u, v, model, f0=f0, freq=freq, factor=dft_sub, w=w)
     eq_g = [Eq(gradm, gradm - expr, subdomain=model.physical)]
     return eq_g
 
@@ -271,7 +271,7 @@ def Loss(dsyn, dobs, dt, is_residual=False, misfit=None):
 
 
 
-def isic_visco_time(u, v, model, **kwargs):
+def isic_visco_time(u, v, model, f0=0.015, **kwargs):
     """
     ISIC-style gradient for viscoacoustic QFWI in time domain.
     
@@ -326,7 +326,7 @@ def isic_visco_time(u, v, model, **kwargs):
     return {"grad_m": grad_m, "grad_q": grad_q}
 
 
-def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
+def isic_visco_freq(u, v, model, f0=0.015, freq=None, dft_sub=None, **kwargs):
     """
     Frequency-domain gradient for viscoacoustic QFWI with SAFE two-gradient return.
 
@@ -373,9 +373,6 @@ def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
     omega = 2 * np.pi * f
 
     # Reference frequency for the KF logarithmic term is user-defined.
-    f0 = kwargs.get('f0', None)
-    if f0 is None:
-        raise ValueError("`f0` must be provided for visco frequency-domain gradient.")
 
     omega0 = 2 * np.pi * float(f0)
     omega_t = omega * tsave * factor * time.spacing
@@ -454,7 +451,7 @@ def isic_visco_src(model, u, param="sc0", **kwargs):
         return (src, src)
     return src
 
-def grad_expr_multi(grad_dict, u, v, model, w=None, freq=None, dft_sub=None, ic="as"):
+def grad_expr_multi(grad_dict, u, v, model, w=None, f0=0.015, freq=None, dft_sub=None, ic="as"):
     """
     Gradient expression for multiple parameters (viscoacoustic extension).
     
@@ -471,8 +468,7 @@ def grad_expr_multi(grad_dict, u, v, model, w=None, freq=None, dft_sub=None, ic=
     if freq is not None:
         ic_kwargs['freq'] = freq
         ic_kwargs['factor'] = dft_sub
-    if hasattr(model, 'f0'):
-        ic_kwargs['f0'] = model.f0
+    ic_kwargs['f0'] = f0
     
     expr = ic_func(u_tuple, v_tuple, model, **ic_kwargs)
     
@@ -500,9 +496,9 @@ fwi_time = lambda *ar, **kw: isic_time(*ar, icsign=-1, **kw)
 fwi_freq = lambda *ar, **kw: isic_freq(*ar, icsign=-1, **kw)
 
 # For viscoacoustic AS path: reuse visco time/freq/source implementations
-as_visco_time = isic_visco_time
-as_visco_freq = isic_visco_freq
-as_visco_src = isic_visco_src
+as_visco_time = lambda *ar, **kw: isic_visco_time(*ar, icsign=-1, **kw)
+as_visco_freq = lambda *ar, **kw: isic_visco_freq(*ar, icsign=-1, **kw)
+as_visco_src = lambda *ar, **kw: isic_visco_src(*ar, icsign=-1, **kw)
 
 # For FWI (minimization): icsign = -1
 fwi_visco_time = lambda *ar, **kw: isic_visco_time(*ar, icsign=-1, **kw)
