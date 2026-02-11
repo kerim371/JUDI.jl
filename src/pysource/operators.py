@@ -193,7 +193,7 @@ def born_op(p_params, tti, visco, elas, space_order, fw, spacing, save, pt_src,
 # В operators.py, в adjoint_born_op:
 @memoized_func
 def adjoint_born_op(p_params, tti, visco, elas, space_order, fw, spacing, pt_rec, fs, w,
-                    save, t_sub, nfreq, dft_sub, ic, illum):
+                    save, t_sub, f0, nfreq, dft_sub, ic, illum):
     """
     Low level gradient operator creation
     """
@@ -223,13 +223,13 @@ def adjoint_born_op(p_params, tti, visco, elas, space_order, fw, spacing, pt_rec
         gradq = Function(name="gradq", grid=model.grid)
         grad_dict = {"grad_m": gradm, "grad_q": gradq}
         # Используем grad_expr_multi для нескольких градиентов
-        g_expr = grad_expr_multi(grad_dict, u, v, model, w=w, freq=freq_list,
+        g_expr = grad_expr_multi(grad_dict, u, v, model, w=w, f0=f0, freq=freq_list,
                                  dft_sub=dft_sub, ic=ic)
     else:
         # Для обычных моделей: один градиент
         gradm = Function(name="gradm", grid=model.grid)
         grad_dict = {"grad_m": gradm}
-        g_expr = grad_expr_multi(grad_dict, u, v, model, w=w, freq=freq_list,
+        g_expr = grad_expr_multi(grad_dict, u, v, model, w=w, f0=f0, freq=freq_list,
                                  dft_sub=dft_sub, ic=ic)
 
     # Illumination
