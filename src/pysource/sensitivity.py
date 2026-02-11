@@ -1,7 +1,7 @@
 import numpy as np
 from sympy import exp
 
-from devito import Eq, grad
+from devito import Eq, grad, div
 from devito.tools import as_tuple
 
 from fields import frequencies
@@ -536,6 +536,9 @@ def grad_expr_multi(grad_dict, u, v, model, w=None, freq=None, dft_sub=None, ic=
     
     Handles both acoustic and viscoacoustic cases with proper parameter separation.
     """
+    if model.is_elastic:
+        return grad_expr_elastic(grad_dict, u, v, model, w=w)
+
     # For viscoacoustic models always use visco imaging condition
     ic_func = ic_dict[func_name(freq=freq, ic=ic, is_viscoacoustic=model.is_viscoacoustic)]
     
@@ -568,6 +571,55 @@ def grad_expr_multi(grad_dict, u, v, model, w=None, freq=None, dft_sub=None, ic=
                          grad_dict["grad_m"] - expr, 
                          subdomain=model.physical))
     
+    return eqs
+
+
+def grad_expr_elastic(grad_dict, u, v, model, w=None):
+    """
+    Elastic imaging condition for Lamé-parameter gradients.
+
+    Parameters
+    ----------
+    grad_dict : dict
+        Dictionary with optional keys ``grad_lam`` and ``grad_mu``.
+    u : tuple
+        Forward wavefield tuple (particle velocity, stress tensor).
+    v : tuple
+        Adjoint wavefield tuple (particle velocity, stress tensor).
+    model : Model
+        Physical model.
+    w : Expr or Number, optional
+        Additional weighting.
+    """
+    uf, _ = as_tuple(u)
+    va, _ = as_tuple(v)
+
+    weight = w if w is not None else 1
+
+    div_u = div(uf)
+    div_v = div(va)
+
+    # Symmetric strain-rate tensors
+    try:
+        eu = grad(uf) + grad(uf).transpose(inner=False)
+        ev = grad(va) + grad(va).transpose(inner=False)
+    except TypeError:
+        eu = grad(uf) + grad(uf).T
+        ev = grad(va) + grad(va).T
+
+    ndim = model.dim
+    frob = sum(eu[i, j] * ev[i, j] for i in range(ndim) for j in range(ndim))
+
+    eqs = []
+    if "grad_lam" in grad_dict:
+        eqs.append(Eq(grad_dict["grad_lam"],
+                      grad_dict["grad_lam"] - weight * div_u * div_v,
+                      subdomain=model.physical))
+    if "grad_mu" in grad_dict:
+        eqs.append(Eq(grad_dict["grad_mu"],
+                      grad_dict["grad_mu"] - weight * frob,
+                      subdomain=model.physical))
+
     return eqs
 
 
