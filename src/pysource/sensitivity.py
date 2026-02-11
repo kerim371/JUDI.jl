@@ -1,5 +1,5 @@
 import numpy as np
-from sympy import exp
+from sympy import exp, log
 
 from devito import Eq, grad
 from devito.tools import as_tuple
@@ -293,72 +293,34 @@ def isic_visco_time(u, v, model, **kwargs):
     """
     u_tuple = as_tuple(u)
     v_tuple = as_tuple(v)
-    
-    # Extract pressure fields (always index 0 in Devito's viscoacoustic implementation)
+
     p = u_tuple[0]
     p_adj = v_tuple[0]
-    
-    # Extract memory variable fields (index 1) - CRITICAL for Q gradient
-    # In Devito's SLS model: r captures attenuation effects and is 90° out of phase with p
     has_memory = len(u_tuple) > 1 and model.is_viscoacoustic
-    if has_memory:
-        r = u_tuple[1]
-        r_adj = v_tuple[1]
-    else:
-        r = None
-    
-    # Time step (use model critical_dt for numerical stability)
-    dt = model.critical_dt
-    w = dt * model.irho
-    
-    # ISIC sign parameter (1 for RTM imaging, -1 for FWI optimization)
+    r = u_tuple[1] if has_memory else None
+
+    gamma = kwargs.get('gamma', 1e6)
+    sQ = kwargs.get('sQ', getattr(model, 'sQ', None))
+    if sQ is None:
+        sQ = 1.0 / model.qp if hasattr(model, 'qp') else 0.0
+
+    sc0 = kwargs.get('sc0', getattr(model, 'sc0', None))
+    if sc0 is None:
+        sc0 = gamma * model.m
+
+    w = (kwargs.get('w') or p.indices[0].spacing * model.irho)
     ics = kwargs.get('icsign', 1)
-    
-    # Source frequency parameters
-    f0 = kwargs.get('f0', 0.015)  # Peak frequency [kHz]
-    omega = 2.0 * np.pi * f0
-    
-    # ============ GRADIENT FOR VELOCITY (grad_m) ============
-    # Main term (A): standard cross-correlation (traveltime sensitivity)
-    # ∂φ/∂m ∝ ρ⁻¹ · p_adj · ∂²p/∂t²
-    # This captures velocity variations through traveltime misfit
-    A_m = w * p_adj.dt2 * p
-    
-    # Gradient term (B): dispersion correction using memory variable
-    # Accounts for velocity dispersion caused by attenuation (Kolsky-Futterman model)
-    # β(ω) ≈ i·(2/π)·log(ω/ω₀) → implemented via phase shift between p and r
-    if has_memory and r is not None:
-        # Phase-shifted correlation: p_adj · ∂r/∂t - r · ∂p_adj/∂t
-        # This is the Hilbert transform equivalent that captures the imaginary part of β(ω)
-        B_m = w * (p_adj * r.dt - r * p_adj.dt)
-    else:
-        # Fallback for models without explicit memory variable
-        B_m = w * p_adj * p.dt
-    
-    # Combine terms with ISIC sign (equation 6 from paper with γ=1)
-    # grad_m = [1 + β(ω)·sQ] · cross_term → A_m + ics·B_m
-    grad_m = A_m + ics * B_m
-    
-    # ============ GRADIENT FOR ATTENUATION (grad_q) ============
-    # Main term (A): phase-shifted correlation (amplitude decay sensitivity)
-    # ∂φ/∂Q ∝ ω² · β(ω) · sc0 · cross_term
-    # The ω² weighting increases sensitivity to high frequencies (more affected by attenuation)
-    if has_memory and r is not None:
-        # Critical physical insight: attenuation gradient requires 90° phase shift
-        # This term is maximally sensitive to AMPLITUDE variations (not traveltime)
-        A_q = omega**2 * w * (p_adj * r.dt - r * p_adj.dt)
-    else:
-        # Fallback: frequency-weighted standard correlation
-        A_q = omega**2 * w * p_adj.dt2 * p
-    
-    # Gradient term (B): spatial gradient term for boundary sensitivity
-    # Improves resolution of attenuation boundaries (optional but recommended)
-    B_q = w * inner_grad(p, p_adj)
-    
-    # Combine terms with ISIC sign (equation 7 from paper)
-    # grad_q = β(ω)·sc0 · cross_term → A_q + ics·B_q
-    grad_q = A_q + ics * B_q
-    
+
+    # Real part of β cannot be represented exactly in time-domain without explicit
+    # frequency decomposition; keep the phase-sensitive (imaginary) component through
+    # the memory variable and use it consistently in both parameter gradients.
+    cross_term = w * p_adj.dt2 * p
+    phase_term = w * (p_adj * r.dt - r * p_adj.dt) if has_memory else w * p_adj * p.dt
+    beta_cross = phase_term - ics * inner_grad(p, p_adj)
+
+    grad_m = (cross_term + sQ * beta_cross) / gamma
+    grad_q = sc0 * beta_cross
+
     return {"grad_m": grad_m, "grad_q": grad_q}
 
 
@@ -384,88 +346,45 @@ def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
     Note: For maximum accuracy, use time-domain (IC="visco") without freq_list.
     This frequency-domain version provides approximate but functional gradients.
     """
-    # Extract fields
     u_tuple = as_tuple(u)
     v_tuple = as_tuple(v)
-    
-    # Pressure fields (always index 0)
+
     p = u_tuple[0]
     p_adj = v_tuple[0]
-    
-    # Memory variable fields (index 1) - CRITICAL for Q gradient separation
-    has_memory = len(u_tuple) > 1 and model.is_viscoacoustic
-    if has_memory:
-        r = u_tuple[1]
-        r_adj = v_tuple[1]
-    else:
-        r = None
-    
-    # Time step (numerical)
-    dt = model.critical_dt
-    w = dt * model.irho
-    
-    # Frequency parameters (numerical)
-    f0 = float(kwargs.get('f0', 0.015))
-    omega0 = 2.0 * np.pi * f0
-    
-    # Get NUMERICAL frequency list
-    freq_list = kwargs.get('freq_list', None)
-    if freq_list is None or len(freq_list) == 0:
-        freq_list = [0.01, 0.02, 0.03]
-    
-    # Time normalization (numerical)
-    nt = float(model.nt) if hasattr(model, 'nt') else 2000.0
-    w_norm = 1.0 / nt
-    
-    # Initialize gradient accumulators
-    grad_m_total = 0
-    grad_q_total = 0
-    
-    # Subsampled DFT time axis (symbolic)
+
+    gamma = kwargs.get('gamma', 1e6)
+    sQ = kwargs.get('sQ', getattr(model, 'sQ', None))
+    if sQ is None:
+        sQ = 1.0 / model.qp if hasattr(model, 'qp') else 0.0
+
+    sc0 = kwargs.get('sc0', getattr(model, 'sc0', None))
+    if sc0 is None:
+        sc0 = gamma * model.m
+
     time = model.grid.time_dim
     tsave, factor = sub_time(time, dft_sub)
-    
-    # Compute gradients for each frequency
-    for freq_val in freq_list:
-        freq_val = float(freq_val)
-        omega_val = 2.0 * np.pi * freq_val
-        
-        # Frequency weighting: ω² / nt
-        w_coeff = (omega_val**2) * w_norm
-        
-        # Phase term for DFT
-        omega_t = omega_val * tsave * factor * time.spacing
-        
-        # Base cross-correlation term
-        u_omega = p * exp(1j * omega_t)
-        cross_term = w_coeff * u_omega * p_adj
-        
-        # ============ VELOCITY GRADIENT (gradm) ============
-        # Standard cross-correlation weighted by ω²
-        grad_m_freq = cross_term
-        
-        # ============ ATTENUATION GRADIENT (gradq) ============
-        # High-frequency weighted term using phase shift approximation
-        # Approximates the imaginary part of β(ω) via frequency-dependent weighting
-        hf_weight = (omega_val / omega0)**2
-        if has_memory and r is not None:
-            # Use memory variable dynamics if available (better approximation)
-            phase_shift = p_adj * r.dt - r * p_adj.dt
-            grad_q_freq = hf_weight * w_coeff * phase_shift
-        else:
-            # Fallback: frequency-weighted standard correlation
-            grad_q_freq = hf_weight * cross_term
-        
-        # Accumulate gradients
-        grad_m_total += grad_m_freq
-        grad_q_total += grad_q_freq
-    
-    # ✅ CRITICAL: Return gradients as TUPLE to avoid field name conflicts
-    # Devito's adjoint_born_op expects either:
-    #   - Single expression → creates field "gradm"
-    #   - Tuple of expressions → creates fields "gradm", "gradq" WITHOUT name conflicts
-    # This avoids the "ufu=ufu(freq_dim, x, y)" error by using Devito's native tuple handling
-    return (grad_m_total, grad_q_total)
+    fdim = as_tuple(u)[0][0].dimensions[0]
+    f, _ = frequencies(freq, fdim=fdim)
+    omega = 2 * np.pi * f
+
+    # Reference frequency for the KF logarithmic term:
+    # - no hard-coded f0 assumption
+    # - by default use the first frequency of the current inversion batch
+    #   (can be overridden by kwargs['freq_ref'])
+    freq_ref = kwargs.get('freq_ref', None)
+    omega_ref = 2 * np.pi * (freq_ref if freq_ref is not None else f[0])
+    omega_t = omega * tsave * factor * time.spacing
+
+    # β(ω) = i - 2/pi * log(ω/ω_ref)
+    beta = 1j - (2.0 / np.pi) * log(omega / omega_ref)
+    w = -(omega**2) / time.symbolic_max
+    idftu = p * exp(1j * omega_t)
+    cross = w * idftu * p_adj
+
+    grad_m = (1.0 / gamma) * (1 + beta * sQ) * cross
+    grad_q = (beta * sc0) * cross
+
+    return {"grad_m": grad_m, "grad_q": grad_q}
 
 
 def isic_visco_src(model, u, param="sc0", **kwargs):
