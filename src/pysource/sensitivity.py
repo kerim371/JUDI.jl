@@ -329,10 +329,7 @@ def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
     Frequency-domain gradient for viscoacoustic QFWI with SAFE two-gradient return.
 
     Reference frequency selection (omega_ref):
-    - If ``freq_ref`` is provided, use it.
-    - Else, estimate automatically from active frequencies as a spectral centroid
-      (expected frequency). Optional weights can be passed via ``freq_weights``
-      (e.g., source/data/wavefield spectral energy per frequency).
+    - ``freq_ref`` must be provided explicitly by the user.
     
     Implements physically distinct gradients for velocity and attenuation
     while avoiding Devito operator compilation errors caused by field name conflicts.
@@ -373,34 +370,12 @@ def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
     f, _ = frequencies(freq, fdim=fdim)
     omega = 2 * np.pi * f
 
-    # Reference frequency for the KF logarithmic term.
-    # Priority:
-    #   1) user override: freq_ref
-    #   2) automatic estimate from active inversion frequencies as
-    #      spectral centroid E[f] = sum(w_i f_i) / sum(w_i)
-    #      where w_i are optional positive frequency weights.
+    # Reference frequency for the KF logarithmic term is user-defined.
     freq_ref = kwargs.get('freq_ref', None)
     if freq_ref is None:
-        freq_vals = np.array(freq if freq is not None else [], dtype=np.float64).reshape(-1)
-        if freq_vals.size == 0:
-            raise ValueError("Frequency-domain visco gradient requires non-empty `freq` or explicit `freq_ref`.")
+        raise ValueError("`freq_ref` must be provided for visco frequency-domain gradient.")
 
-        weights = kwargs.get('freq_weights', None)
-        if weights is None:
-            # Uniform expectation if spectral weights are not provided.
-            freq_ref = float(np.mean(freq_vals))
-        else:
-            w_arr = np.array(weights, dtype=np.float64).reshape(-1)
-            if w_arr.size != freq_vals.size:
-                raise ValueError("`freq_weights` must have the same length as `freq`.")
-            w_arr = np.maximum(w_arr, 0.0)
-            wsum = float(np.sum(w_arr))
-            if wsum <= 0.0:
-                freq_ref = float(np.mean(freq_vals))
-            else:
-                freq_ref = float(np.sum(w_arr * freq_vals) / wsum)
-
-    omega_ref = 2 * np.pi * freq_ref
+    omega_ref = 2 * np.pi * float(freq_ref)
     omega_t = omega * tsave * factor * time.spacing
 
     # β(ω) = i - 2/pi * log(ω/ω_ref)
