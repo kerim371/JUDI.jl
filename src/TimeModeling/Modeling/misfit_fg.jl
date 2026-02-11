@@ -87,13 +87,30 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     end
 
     @juditime "Remove padding from gradient" begin
-        # ✅ Для вязкоакустики: градиенты в отдельных элементах argout[2] и argout[3]
-        if JUDI.is_viscoacoustic(model_full) && length(argout) >= 4
-            grad_vp = PhysicalParameter(remove_padding(argout[2], modelPy.padsizes; true_adjoint=options.sum_padding),
+        if JUDI.is_viscoacoustic(model_full)
+            # Robustly support both layouts:
+            #  (f, grad_vp, grad_q, ...)
+            #  (f, (grad_vp, grad_q), ...)
+            if length(argout) >= 3 && !(argout[2] isa Tuple)
+                grad_vp_arr = argout[2]
+                grad_q_arr = argout[3]
+                grad_vp = PhysicalParameter(remove_padding(grad_vp_arr, modelPy.padsizes; true_adjoint=options.sum_padding),
+                                            spacing(model), origin(model))
+                grad_q = PhysicalParameter(remove_padding(grad_q_arr, modelPy.padsizes; true_adjoint=options.sum_padding),
+                                           spacing(model), origin(model))
+                grad = (grad_vp, grad_q)
+            elseif length(argout) >= 2 && argout[2] isa Tuple && length(argout[2]) == 2
+                grad_vp_arr, grad_q_arr = argout[2]
+                grad_vp = PhysicalParameter(remove_padding(grad_vp_arr, modelPy.padsizes; true_adjoint=options.sum_padding),
+                                            spacing(model), origin(model))
+                grad_q = PhysicalParameter(remove_padding(grad_q_arr, modelPy.padsizes; true_adjoint=options.sum_padding),
+                                           spacing(model), origin(model))
+                grad = (grad_vp, grad_q)
+            else
+                @warn "Visco mode detected but only one gradient returned; treating as velocity gradient only" maxlog=1 _id=:visco_grad_parse
+                grad = PhysicalParameter(remove_padding(argout[2], modelPy.padsizes; true_adjoint=options.sum_padding),
                                         spacing(model), origin(model))
-            grad_q = PhysicalParameter(remove_padding(argout[3], modelPy.padsizes; true_adjoint=options.sum_padding),
-                                    spacing(model), origin(model))
-            grad = (grad_vp, grad_q)  # ← кортеж из двух градиентов
+            end
         else
             grad = PhysicalParameter(remove_padding(argout[2], modelPy.padsizes; true_adjoint=options.sum_padding),
                                     spacing(model), origin(model))
