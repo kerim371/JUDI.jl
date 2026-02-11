@@ -413,15 +413,19 @@ def J_adjoint_freq(model, src_coords, wavelet, rec_coords, recin,
     else:
         g, Iv, _ = gradient(model, residual, rec_coords, u, ic=ic,
                             freq=freq_list, dft_sub=dft_sub, f0=f0, illum=illum, fw=fw)
-        grad_vp = g
+        if model.is_elastic:
+            grad_vp, grad_q = g
+        else:
+            grad_vp = g
 
+    is_multi_grad = model.is_viscoacoustic or model.is_elastic
     if return_obj:
-        if model.is_viscoacoustic:
+        if is_multi_grad:
             return f, grad_vp.data, grad_q.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
         else:
             return f, grad_vp.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
     else:
-        if model.is_viscoacoustic:
+        if is_multi_grad:
             return grad_vp.data, grad_q.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
         else:
             return grad_vp.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
@@ -488,16 +492,17 @@ def J_adjoint_standard(model, src_coords, wavelet, rec_coords, recin,
                              f0=f0, illum=illum, fw=fw)
     
     # ✅ ПЛОСКАЯ СТРУКТУРА БЕЗ ВЛОЖЕННЫХ КОРТЕЖЕЙ
+    is_multi_grad = model.is_viscoacoustic or model.is_elastic
     if return_obj:
         # FWI mode: (fval, grad_vp, grad_q, Iu, Iv) — 5 элементов для вязкоакустики
-        if model.is_viscoacoustic:
+        if is_multi_grad:
             grad_vp, grad_q = g
             return f, grad_vp.data, grad_q.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
         else:
             return f, g.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
     else:
         # RTM mode: ПЛОСКАЯ структура (без вложенных кортежей!)
-        if model.is_viscoacoustic:
+        if is_multi_grad:
             grad_vp, grad_q = g
             # 4 элемента: grad_vp, grad_q, Iu, Iv
             return grad_vp.data, grad_q.data, getattr(Iu, "data", None), getattr(Iv, "data", None)
@@ -596,16 +601,19 @@ def J_adjoint_checkpointing(model, src_coords, wavelet, rec_coords, recin,
     
     if model.is_viscoacoustic:
         grad_vp, grad_q = g
+    elif model.is_elastic:
+        grad_vp, grad_q = g
     else:
         grad_vp = g
 
+    is_multi_grad = model.is_viscoacoustic or model.is_elastic
     if return_obj:
-        if model.is_viscoacoustic:
+        if is_multi_grad:
             return f, grad_vp.data, grad_q.data, Iu, Iv
         else:
             return f, grad_vp.data, Iu, Iv
     else:
-        if model.is_viscoacoustic:
+        if is_multi_grad:
             return grad_vp.data, grad_q.data, Iu, Iv
         else:
             return grad_vp.data, Iu, Iv

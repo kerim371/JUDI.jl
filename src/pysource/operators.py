@@ -217,7 +217,13 @@ def adjoint_born_op(p_params, tti, visco, elas, space_order, fw, spacing, pt_rec
     pde, extra = wave_kernel(model, v, fw=False, f0=Constant('f0'))
 
     # Setup gradient(s) - ВОТ ЭТО ИЗМЕНЯЕМ!
-    if visco:
+    if elas:
+        grad_lam = Function(name="grad_lam", grid=model.grid)
+        grad_mu = Function(name="grad_mu", grid=model.grid)
+        grad_dict = {"grad_lam": grad_lam, "grad_mu": grad_mu}
+        g_expr = grad_expr_multi(grad_dict, u, v, model, w=w, freq=freq_list,
+                                 dft_sub=dft_sub, ic=ic)
+    elif visco:
         # Для вязкоакустики: два градиента
         gradm = Function(name="gradm", grid=model.grid)
         gradq = Function(name="gradq", grid=model.grid)

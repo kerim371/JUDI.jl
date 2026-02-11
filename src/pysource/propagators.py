@@ -112,8 +112,12 @@ def gradient(model, residual, rcv_coords, u, return_op=False, fw=True,
     except AttributeError:
         t_sub = 1
 
-    # Setup gradient wrt m
-    gradm = Function(name="gradm", grid=model.grid)
+    # Setup gradients
+    if model.is_elastic:
+        grad_lam = Function(name="grad_lam", grid=model.grid)
+        grad_mu = Function(name="grad_mu", grid=model.grid)
+    else:
+        gradm = Function(name="gradm", grid=model.grid)
 
     # Setup source and receiver
     src, _ = src_rec(model, v, src_coords=rcv_coords, wavelet=residual)
@@ -132,7 +136,11 @@ def gradient(model, residual, rcv_coords, u, return_op=False, fw=True,
     # Illumination
     I = illumination(v, illum)
 
-    kw.update(fields_kwargs(src, u, v, gradm, f0q, f, I))
+    if model.is_elastic:
+        kw.update(fields_kwargs(src, u, v, grad_lam, f0q, f, I))
+        kw['grad_mu'] = grad_mu
+    else:
+        kw.update(fields_kwargs(src, u, v, gradm, f0q, f, I))
     kw.update(model.physical_params())
     kw.update(model.abox(src, None, fw=not fw))
 
@@ -142,6 +150,8 @@ def gradient(model, residual, rcv_coords, u, return_op=False, fw=True,
         kw.update({r.name: r})
 
     if return_op:
+        if model.is_elastic:
+            return op, (grad_lam, grad_mu), kw
         return op, gradm, kw
 
     summary = op(**kw)
@@ -149,6 +159,8 @@ def gradient(model, residual, rcv_coords, u, return_op=False, fw=True,
     cleanup_wf(u)
 
     # Output
+    if model.is_elastic:
+        return (grad_lam, grad_mu), I, summary
     return gradm, I, summary
 
 
