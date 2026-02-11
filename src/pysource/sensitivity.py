@@ -328,8 +328,8 @@ def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
     """
     Frequency-domain gradient for viscoacoustic QFWI with SAFE two-gradient return.
 
-    Reference frequency selection (omega_ref):
-    - ``freq_ref`` must be provided explicitly by the user.
+    Reference frequency selection (omega0):
+    - ``f0`` must be provided explicitly by the user.
     
     Implements physically distinct gradients for velocity and attenuation
     while avoiding Devito operator compilation errors caused by field name conflicts.
@@ -371,15 +371,15 @@ def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
     omega = 2 * np.pi * f
 
     # Reference frequency for the KF logarithmic term is user-defined.
-    freq_ref = kwargs.get('freq_ref', None)
-    if freq_ref is None:
-        raise ValueError("`freq_ref` must be provided for visco frequency-domain gradient.")
+    f0 = kwargs.get('f0', None)
+    if f0 is None:
+        raise ValueError("`f0` must be provided for visco frequency-domain gradient.")
 
-    omega_ref = 2 * np.pi * float(freq_ref)
+    omega0 = 2 * np.pi * float(f0)
     omega_t = omega * tsave * factor * time.spacing
 
     # β(ω) = i - 2/pi * log(ω/ω_ref)
-    beta = 1j - (2.0 / np.pi) * log(omega / omega_ref)
+    beta = 1j - (2.0 / np.pi) * log(omega / omega0)
     w = -(omega**2) / time.symbolic_max
     idftu = p * exp(1j * omega_t)
     cross = w * idftu * p_adj
