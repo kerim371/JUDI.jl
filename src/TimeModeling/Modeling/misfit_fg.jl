@@ -6,6 +6,10 @@ Dtypes = Union{<:judiVector, NTuple{N, <:judiVector} where N, Vector{<:judiVecto
 MTypes = Union{<:AbstractModel, NTuple{N, <:AbstractModel} where N, Vector{<:AbstractModel}}
 dmTypes = Union{dmType, NTuple{N, dmType} where N, Vector{dmType}}
 
+
+@inline _apply_model_precon(model_precon, g::PhysicalParameter) = model_precon * g
+@inline _apply_model_precon(model_precon, g::Tuple) = tuple((_apply_model_precon(model_precon, gi) for gi in g)...)
+
 function is_viscoacoustic(model::AbstractModel)
     # Check if model has Q parameter (qp field)
     return hasfield(typeof(model), :qp) && !isnothing(model.qp)
@@ -34,8 +38,18 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     d_geometry = Geometry(dObs.geometry)
     s_geometry = Geometry(source.geometry)
     
-    # If model preconditioner is provided, apply it
-    dm = isnothing(dm) ? dm : model_precon * dm
+    # Allow passing a model preconditioner through `data_precon` by mistake
+    # (e.g., judiIllumination). Route it to model preconditioning path.
+    local_data_precon = data_precon
+    local_model_precon = model_precon
+    if data_precon isa ModelPreconditioner
+        @warn "`data_precon` received a ModelPreconditioner; applying it as `model_precon`" maxlog=1 _id=:precon_route
+        local_data_precon = nothing
+        local_model_precon = model_precon * data_precon
+    end
+
+    # If model preconditioner is provided, apply it to perturbation for linearized mode
+    dm = isnothing(dm) ? dm : local_model_precon * dm
 
     # Limit model to area with sources/receivers
     if options.limit_m == true
@@ -65,10 +79,10 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     end
 
     # Setup misfit function
-    if !isnothing(data_precon)
+    if !isnothing(local_data_precon)
         # resample
         new_t = StepRangeLen(0f0, Float32(dtComp), Int64(size(dObserved, 1)))
-        Pcomp  = time_resample(data_precon, new_t)
+        Pcomp  = time_resample(local_data_precon, new_t)
         runtime_misfit = (x, y) -> misfit(Pcomp*x, Pcomp*y)
     else
         runtime_misfit = misfit
@@ -116,6 +130,9 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
                                     spacing(model), origin(model))
         end
     end
+
+    # Apply model preconditioner to gradient(s) for FWI/LSRTM output
+    grad = _apply_model_precon(local_model_precon, grad)
 
     fval = argout[1]  # Скаляр, не нужно оборачивать в Ref
 
