@@ -7,9 +7,6 @@ MTypes = Union{<:AbstractModel, NTuple{N, <:AbstractModel} where N, Vector{<:Abs
 dmTypes = Union{dmType, NTuple{N, dmType} where N, Vector{dmType}}
 
 
-@inline _merge_model_precon(model_precon, extra_precon) = model_precon * extra_precon
-@inline _merge_model_precon(model_precon::UniformScaling, extra_precon) = extra_precon
-
 @inline _apply_model_precon(model_precon::UniformScaling, g::PhysicalParameter) = g
 @inline _apply_model_precon(model_precon, g::PhysicalParameter) = model_precon * g
 @inline _apply_model_precon(model_precon, g::Tuple) = tuple((_apply_model_precon(model_precon, gi) for gi in g)...)
@@ -49,7 +46,12 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     if data_precon isa ModelPreconditioner
         @warn "`data_precon` received a ModelPreconditioner; applying it as `model_precon`" maxlog=1 _id=:precon_route
         local_data_precon = nothing
-        local_model_precon = _merge_model_precon(model_precon, data_precon)
+        # Avoid unsupported UniformScaling * jo-operator in JOLI
+        if model_precon isa UniformScaling
+            local_model_precon = data_precon
+        else
+            local_model_precon = model_precon * data_precon
+        end
     end
 
     # If model preconditioner is provided, apply it to perturbation for linearized mode
