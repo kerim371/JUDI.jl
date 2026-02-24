@@ -125,17 +125,21 @@ Construct the diagonal operator such that I*x = x ./ |||u||_2^2
 
 
 """
-struct judiIllumination{DDT, M, K, R} <: ModelPreconditioner{DDT, DDT}
+struct judiIllumination{DDT, M, K, R, PH} <: ModelPreconditioner{DDT, DDT}
     name::String
     illums
     m::Integer
 end
 
+is_viscoacoustic_model(model::AbstractModel) = hasfield(typeof(model), :qp) && !isnothing(getfield(model, :qp))
+
 function judiIllumination(model::AbstractModel; mode="u", k=1, recompute=true)
     n = prod(size(model))
     # Initialize the illumination as the identity
     illum = Dict(s=>PhysicalParameter(size(model), spacing(model), origin(model), ones(Float32, size(model))) for s in split(mode, ""))
-    I = judiIllumination{Float32, Symbol(mode), k, recompute}("Illumination", illum, n)
+    # Appendix A pseudo-Hessian scaling (sqrt of diagonal approximation) for viscoacoustic models.
+    pseudo_hessian = is_viscoacoustic_model(model)
+    I = judiIllumination{Float32, Symbol(mode), k, recompute, pseudo_hessian}("Illumination", illum, n)
     init_illum(model, I)
     return I
 end
@@ -149,30 +153,40 @@ adjoint(I::judiIllumination{T}) where T = I
 transpose(I::judiIllumination{T}) where T = I
 
 # Inverse
-inv(I::judiIllumination{T, M, K, R}) where {T, M, K, R} = judiIllumination{T, M, -K, R}(I.name, I.illums, I.m)
+inv(I::judiIllumination{T, M, K, R, PH}) where {T, M, K, R, PH} = judiIllumination{T, M, -K, R, PH}(I.name, I.illums, I.m)
 
 # Mul
-function matvec(I::judiIllumination{T, M, K, R}, x::Vector{T}) where {T, M, K, R}
+
+@inline _illum_power(::judiIllumination{T, M, K, R, PH}) where {T, M, K, R, PH} = PH ? (K/2) : K
+
+function matvec(I::judiIllumination{T, M, K, R, PH}, x::Vector{T}) where {T, M, K, R, PH}
     # Illumination is expected to represent an energy-like quantity, but some
     # propagators (e.g. viscoacoustic) may return signed fields. Use magnitude
     # before the fractional power to avoid DomainError for negative values.
     illum = abs.(.*(values(I.illums)...)).^(1/length(I.illums))
     inds = findall(illum[:] .> eps(T))
     out = T(0) * x
-    out[inds] .= illum[:][inds].^K .* x[inds]
+    p = _illum_power(I)
+    out[inds] .= illum[:][inds].^p .* x[inds]
     return out
 end
 
-function matvec(I::judiIllumination{T, M, K, R}, x::PhysicalParameter{T}) where {T, M, K, R}
+function matvec(I::judiIllumination{T, M, K, R, PH}, x::PhysicalParameter{T}) where {T, M, K, R, PH}
     illum = abs.(.*(values(I.illums)...)).^(1/length(I.illums))
     inds = findall(illum .> eps(T))
     out = T(0) * x
-    out[inds] .= illum[inds].^K .* x[inds]
+    p = _illum_power(I)
+    out[inds] .= illum[inds].^p .* x[inds]
     return out
 end
 
+
+function matvec(I::judiIllumination, x::Tuple{<:PhysicalParameter, <:PhysicalParameter})
+    return (matvec(I, x[1]), matvec(I, x[2]))
+end
+
 # Functor
-function (I::judiIllumination{T, M, K, R})(mode::String) where {T, M, K, R}
+function (I::judiIllumination{T, M, K, R, PH})(mode::String) where {T, M, K, R, PH}
     illum = Dict(s=>similar(first(values(I.illums))) for s in split(mode, ""))
     for k ∈ keys(illum)
         if k ∈ keys(I.illums)
@@ -181,11 +195,11 @@ function (I::judiIllumination{T, M, K, R})(mode::String) where {T, M, K, R}
             fill!(illum[k], 1)
         end
     end
-    judiIllumination{T, Symbol(mode), K, R}(I.name, illum, I.m)
+    judiIllumination{T, Symbol(mode), K, R, PH}(I.name, illum, I.m)
 end
 
 # Assignment
-function set_val(I::judiIllumination{T, M, K, R}, mode, v) where {T, M, K, R}
+function set_val(I::judiIllumination{T, M, K, R, PH}, mode, v) where {T, M, K, R, PH}
     key = mode ∈ [:forward, :born] ? "u" : "v"
     if key in keys(I.illums)
         # For safety when propagation doesn't reach all the model
@@ -195,7 +209,7 @@ function set_val(I::judiIllumination{T, M, K, R}, mode, v) where {T, M, K, R}
 end
 
 # status
-function is_updated(I::judiIllumination{T, M, K, R}) where {T, M, K, R}
+function is_updated(I::judiIllumination{T, M, K, R, PH}) where {T, M, K, R, PH}
     updated = true
     for (k, v) in I.illums
         im, iM = extrema(v)
@@ -236,10 +250,9 @@ function update_illum(model::AbstractModel, i::PhysicalParameter, mode)
     _illums[objectid(model)][2] = is_updated(_illums[objectid(model)][1])
 end
 
-# ✅ ДОБАВИТЬ ЭТУ СТРОКУ:
 update_illum(vals::Tuple, F::judiJacobian) = vals
 
-function _compute_illum(::judiIllumination{T, M, K, R}, status, mode) where {T, M, K, R}
+function _compute_illum(::judiIllumination{T, M, K, R, PH}, status, mode) where {T, M, K, R, PH}
     if status && ~R
         return false
     elseif (mode ∈ [:forward, :born] && M ∈ [:u, :uv]) || (mode == :adjoint && M ∈ [:v, :uv]) || (mode == :adjoint_born)
