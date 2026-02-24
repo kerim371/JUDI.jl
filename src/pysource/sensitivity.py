@@ -1,5 +1,5 @@
 import numpy as np
-from sympy import exp, log
+from sympy import exp
 
 from devito import Eq, grad
 from devito.tools import as_tuple
@@ -273,118 +273,63 @@ def Loss(dsyn, dobs, dt, is_residual=False, misfit=None):
 
 def isic_visco_time(u, v, model, f0=0.015, **kwargs):
     """
-    ISIC-style gradient for viscoacoustic QFWI in time domain.
-    
-    Implements physically distinct gradients for velocity and attenuation
-    to minimize parameter cross-talk as described in:
-    
-    "Parameter cross-talk and modelling errors in viscoacoustic 
-    seismic full waveform inversion"
-    
-    Returns:
-        dict with keys:
-          - 'grad_m': gradient w.r.t. slowness squared (m = 1/v²)
-          - 'grad_q': gradient w.r.t. inverse quality factor (1/Q)
-    
-    Physics:
-    - grad_m: sensitive to TRAVELTIME variations (velocity structure)
-    - grad_q: sensitive to AMPLITUDE decay (attenuation structure)
-    
-    The 90° phase shift between pressure (p) and memory variable (r) creates
-    the necessary distinction between velocity and attenuation updates.
+    Time-domain viscoacoustic gradients for (m, qp).
+
+    The implementation follows the generalized-Zener split used in QFWI:
+      - velocity-like term from the elastic component,
+      - attenuation-like term from memory-variable coupling.
+
+    Notes
+    -----
+    The current propagator stores a single pressure wavefield in forward mode.
+    If a forward memory field is not available in `u`, we use `p.dt` as a stable
+    proxy for the dissipative state variable.
     """
-    u_tuple = as_tuple(u)
-    v_tuple = as_tuple(v)
+    p = as_tuple(u)[0]
+    p_adj = as_tuple(v)[0]
 
-    p = u_tuple[0]
-    p_adj = v_tuple[0]
-    has_memory = len(u_tuple) > 1 and model.is_viscoacoustic
-    r = u_tuple[1] if has_memory else None
+    dtw = kwargs.get('w') or p.indices[0].spacing
+    w = dtw * model.irho
+    qinv = 1.0 / model.qp
 
-    gamma = kwargs.get('gamma', 1e6)
-    sQ = kwargs.get('sQ', getattr(model, 'sQ', None))
-    if sQ is None:
-        sQ = 1.0 / model.qp if hasattr(model, 'qp') else 0.0
+    has_forward_memory = len(as_tuple(u)) > 1
+    xi = as_tuple(u)[1] if has_forward_memory else p.dt
 
-    sc0 = kwargs.get('sc0', getattr(model, 'sc0', None))
-    if sc0 is None:
-        sc0 = gamma * model.m
+    # dJ/dm: dominant kinematic (elastic) contribution + visco coupling correction
+    grad_m = w * (p_adj.dt2 * p - qinv * p_adj * xi)
 
-    w = (kwargs.get('w') or p.indices[0].spacing * model.irho)
-    ics = kwargs.get('icsign', 1)
-
-    # Real part of β cannot be represented exactly in time-domain without explicit
-    # frequency decomposition; keep the phase-sensitive (imaginary) component through
-    # the memory variable and use it consistently in both parameter gradients.
-    cross_term = w * p_adj.dt2 * p
-    phase_term = w * (p_adj * r.dt - r * p_adj.dt) if has_memory else w * p_adj * p.dt
-    beta_cross = phase_term - ics * inner_grad(p, p_adj)
-
-    grad_m = (cross_term + sQ * beta_cross) / gamma
-    grad_q = sc0 * beta_cross
+    # dJ/d(1/Q) mapped to qp through dqinv/dqp = -1/qp^2
+    grad_qinv = -w * model.m * p_adj * xi
+    grad_q = grad_qinv / (model.qp**2)
 
     return {"grad_m": grad_m, "grad_q": grad_q}
 
 
 def isic_visco_freq(u, v, model, f0=0.015, freq=None, dft_sub=None, **kwargs):
     """
-    Frequency-domain gradient for viscoacoustic QFWI with SAFE two-gradient return.
-
-    Reference frequency selection (omega0):
-    - ``f0`` must be provided explicitly by the user.
-    
-    Implements physically distinct gradients for velocity and attenuation
-    while avoiding Devito operator compilation errors caused by field name conflicts.
-    
-    Returns:
-        dict with STANDARD Devito gradient names:
-          - 'gradm': gradient w.r.t. slowness squared (m = 1/v²)
-          - 'gradq': gradient w.r.t. inverse quality factor (1/Q)
-    
-    Critical design:
-    1. Uses TIME-DOMAIN physics (memory variable r) for gradient separation
-    2. Applies frequency weighting ω² to both gradients for spectral sensitivity
-    3. Returns SINGLE symbolic expression that encodes BOTH gradients via
-       Devito's Tuple mechanism (avoids field name conflicts)
-    4. Full gradient separation happens in post-processing via judiGradient structure
-    
-    Note: For maximum accuracy, use time-domain (IC="visco") without freq_list.
-    This frequency-domain version provides approximate but functional gradients.
+    On-the-fly DFT variant of viscoacoustic gradients for (m, qp).
     """
-    u_tuple = as_tuple(u)
-    v_tuple = as_tuple(v)
-
-    p = u_tuple[0]
-    p_adj = v_tuple[0]
-
-    gamma = kwargs.get('gamma', 1e6)
-    sQ = kwargs.get('sQ', getattr(model, 'sQ', None))
-    if sQ is None:
-        sQ = 1.0 / model.qp if hasattr(model, 'qp') else 0.0
-
-    sc0 = kwargs.get('sc0', getattr(model, 'sc0', None))
-    if sc0 is None:
-        sc0 = gamma * model.m
+    p = as_tuple(u)[0]
+    p_adj = as_tuple(v)[0]
 
     time = model.grid.time_dim
     tsave, factor = sub_time(time, dft_sub)
     fdim = as_tuple(u)[0][0].dimensions[0]
     f, _ = frequencies(freq, fdim=fdim)
-    omega = 2 * np.pi * f
-
-    # Reference frequency for the KF logarithmic term is user-defined.
-
-    omega0 = 2 * np.pi * float(f0)
+    omega = 2*np.pi*f
     omega_t = omega * tsave * factor * time.spacing
 
-    # β(ω) = i - 2/pi * log(ω/ω0)
-    beta = 1j - (2.0 / np.pi) * log(omega / omega0)
+    qinv = 1.0 / model.qp
     w = -(omega**2) / time.symbolic_max
     idftu = p * exp(1j * omega_t)
-    cross = w * idftu * p_adj
 
-    grad_m = (1.0 / gamma) * (1 + beta * sQ) * cross
-    grad_q = (beta * sc0) * cross
+    # In frequency mode no explicit memory state is carried in saved fields;
+    # keep a consistent proxy through spectral weighting of pressure.
+    xi = 1j * omega * idftu
+
+    grad_m = w * (idftu * p_adj - qinv * p_adj * xi)
+    grad_qinv = -w * model.m * p_adj * xi
+    grad_q = grad_qinv / (model.qp**2)
 
     return {"grad_m": grad_m, "grad_q": grad_q}
 
