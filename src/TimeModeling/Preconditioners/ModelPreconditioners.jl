@@ -153,7 +153,10 @@ inv(I::judiIllumination{T, M, K, R}) where {T, M, K, R} = judiIllumination{T, M,
 
 # Mul
 function matvec(I::judiIllumination{T, M, K, R}, x::Vector{T}) where {T, M, K, R}
-    illum = (.*(values(I.illums)...)).^(1/length(I.illums))
+    # Illumination is expected to represent an energy-like quantity, but some
+    # propagators (e.g. viscoacoustic) may return signed fields. Use magnitude
+    # before the fractional power to avoid DomainError for negative values.
+    illum = abs.(.*(values(I.illums)...)).^(1/length(I.illums))
     inds = findall(illum[:] .> eps(T))
     out = T(0) * x
     out[inds] .= illum[:][inds].^K .* x[inds]
@@ -161,7 +164,7 @@ function matvec(I::judiIllumination{T, M, K, R}, x::Vector{T}) where {T, M, K, R
 end
 
 function matvec(I::judiIllumination{T, M, K, R}, x::PhysicalParameter{T}) where {T, M, K, R}
-    illum = (.*(values(I.illums)...)).^(1/length(I.illums))
+    illum = abs.(.*(values(I.illums)...)).^(1/length(I.illums))
     inds = findall(illum .> eps(T))
     out = T(0) * x
     out[inds] .= illum[inds].^K .* x[inds]
@@ -233,7 +236,6 @@ function update_illum(model::AbstractModel, i::PhysicalParameter, mode)
     _illums[objectid(model)][2] = is_updated(_illums[objectid(model)][1])
 end
 
-# ✅ ДОБАВИТЬ ЭТУ СТРОКУ:
 update_illum(vals::Tuple, F::judiJacobian) = vals
 
 function _compute_illum(::judiIllumination{T, M, K, R}, status, mode) where {T, M, K, R}
