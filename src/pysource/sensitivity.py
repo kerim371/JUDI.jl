@@ -1,5 +1,5 @@
 import numpy as np
-from sympy import I, exp, log, pi, sqrt
+from sympy import exp, log, pi, sqrt
 
 from devito import Eq, grad
 from devito.tools import as_tuple
@@ -270,8 +270,16 @@ def Loss(dsyn, dobs, dt, is_residual=False, misfit=None):
 
 
 def _beta_kf(freq_hz, f0_hz):
-    """β(ω) = i - (2/π) log(ω/ω0) for the Kolsky-Futterman model."""
-    return I - (2 / pi) * log(freq_hz / f0_hz)
+    """
+    Real-valued part of β(ω) for Kolsky-Futterman dispersion:
+    Re{β(ω)} = -(2/π) log(ω/ω0).
+
+    Note: the imaginary constant part of β would introduce complex-valued
+    symbols in time-domain kernels and break C code generation in Devito
+    (`_Complex_I` emission). We therefore use the real part in stencil-level
+    expressions.
+    """
+    return -(2 / pi) * log(freq_hz / f0_hz)
 
 
 def _keating_base_terms(p, p_adj, model, beta):
@@ -311,8 +319,8 @@ def isic_visco_time(u, v, model, **kwargs):
     p = as_tuple(u)[0]
     p_adj = as_tuple(v)[0]
 
-    # Time-domain implementation: narrow-band approximation around f0,
-    # where log(ω/ω0)=0 and β≈i.
+    # Time-domain implementation around f0: Re{β(f0)} = 0.
+    # (Imaginary β-part is intentionally omitted in stencil expressions.)
     f0 = kwargs.get('f0', 0.015)
     beta0 = _beta_kf(f0, f0)
 
