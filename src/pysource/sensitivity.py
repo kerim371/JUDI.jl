@@ -319,10 +319,11 @@ def isic_visco_time(u, v, model, **kwargs):
     p = as_tuple(u)[0]
     p_adj = as_tuple(v)[0]
 
-    # Time-domain implementation around f0: Re{β(f0)} = 0.
-    # (Imaginary β-part is intentionally omitted in stencil expressions.)
-    f0 = kwargs.get('f0', 0.015)
-    beta0 = _beta_kf(f0, f0)
+    # Time-domain implementation uses a real-valued proxy for β near f0.
+    # We avoid the complex unit from β=i-2/pi*log(ω/ω0), but keep a non-zero
+    # attenuation sensitivity by taking β≈1 in time-domain accumulation.
+    f0 = kwargs.get('f0', 0.015)  # kept for API symmetry with frequency path
+    beta0 = 1.0
 
     # Use p_tt as the time-domain analogue of ω² u(ω).
     gv, gqp = _keating_base_terms(p.dt2, p_adj, model, beta0)
