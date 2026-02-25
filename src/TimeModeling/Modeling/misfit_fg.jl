@@ -250,8 +250,11 @@ Example
     function_value = fwi_objective!(gradient, model, source, dobs)
 """
 function fwi_objective!(G, model::MTypes, q::Dtypes, dobs::Dtypes; options=Options(), kw...)
+    misfit_kw = get(kw, :misfit, mse)
+    misfit_fun = misfit_kw isa Symbol ? visco_misfit(misfit_kw) : misfit_kw
+    kwargs = (; kw..., misfit=misfit_fun)
     n_exp = check_args(G, model, dobs, q)
-    return multi_exp_fg!(Val(n_exp), G, model, q, dobs, nothing; options=options, nlind=false, lin=false, kw...)
+    return multi_exp_fg!(Val(n_exp), G, model, q, dobs, nothing; options=options, nlind=false, lin=false, kwargs...)
 end
 
 """
@@ -266,8 +269,11 @@ Example
     function_value = lsrtm_objective!(gradient, model, source, dobs, dm; options=Options(), nlind=false)
 """
 function lsrtm_objective!(G, model::MTypes, q::Dtypes, dobs::Dtypes, dm::dmTypes; options=Options(), nlind=false, kw...)
+    misfit_kw = get(kw, :misfit, mse)
+    misfit_fun = misfit_kw isa Symbol ? visco_misfit(misfit_kw) : misfit_kw
+    kwargs = (; kw..., misfit=misfit_fun)
     n_exp = check_args(G, model, q, dobs, dm)
-    return multi_exp_fg!(Val(n_exp), G, model, q, dobs, dm; options=options, nlind=nlind, lin=true, kw...)
+    return multi_exp_fg!(Val(n_exp), G, model, q, dobs, dm; options=options, nlind=nlind, lin=true, kwargs...)
 end
 
 multi_exp_fg!(n::Val{1}, ar...; kw...) = multi_src_fg!(ar...; kw...)
