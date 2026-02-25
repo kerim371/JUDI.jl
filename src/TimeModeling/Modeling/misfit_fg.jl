@@ -117,7 +117,7 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
         end
     end
 
-    fval = argout[1]  # Скаляр, не нужно оборачивать в Ref
+    fval = argout[1]
 
     if illum
         @juditime "Process illumination" begin
@@ -171,6 +171,22 @@ end
 ####################### User Interface #########################################################
 ################################################################################################
 
+
+"""
+    fwi_visco_objective(model, source, dobs; options=Options(), misfit=:wf)
+
+Convenience wrapper for visco-acoustic FWI that returns objective value and
+a tuple of gradients `(∂J/∂vp, ∂J/∂qp)`.
+
+The `misfit` keyword accepts `:wf`, `:fwa`, `:icf` or a custom callable
+with signature `misfit(dsyn, dobs) -> (f, residual)` compatible with
+`fwi_objective`.
+"""
+function fwi_visco_objective(model::MTypes, q::Dtypes, dobs::Dtypes; options=Options(), misfit=:wf, kw...)
+    mf = misfit isa Symbol ? visco_misfit(misfit) : misfit
+    return fwi_objective(model, q, dobs; options=options, misfit=mf, kw...)
+end
+
 """
     fwi_objective(model, source, dobs; options=Options())
 
@@ -184,17 +200,17 @@ Example
 """
 function fwi_objective(model::MTypes, q::Dtypes, dobs::Dtypes; options=Options(), kw...)
     if is_viscoacoustic(model)
-        # Инициализируем два градиента для вязкоакустики
+        # Initialize two gradients for visco-acoustic inversion
         G_vp = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
         G_q = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
-        G = (G_vp, G_q)  # ← кортеж для накопления
+        G = (G_vp, G_q)
     else
         G = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
     end
 
     f = fwi_objective!(G, model, q, dobs; options=options, kw...)
 
-    # Возвращаем кортеж градиентов для вязкоакустики
+    # Return a gradient tuple for visco-acoustic models
     return f, G
 end
 
@@ -211,10 +227,10 @@ Example
 """
 function lsrtm_objective(model::MTypes, q::Dtypes, dobs::Dtypes, dm::dmTypes; options=Options(), nlind=false, kw...)
     if is_viscoacoustic(model)
-        # Инициализируем два градиента для вязкоакустики
+        # Initialize two gradients for visco-acoustic inversion
         G_vp = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
         G_q = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
-        G = (G_vp, G_q)  # ← кортеж для накопления
+        G = (G_vp, G_q)
     else
         G = PhysicalParameter(zeros(eltype(model.m), size(model)), spacing(model), origin(model))
     end
@@ -258,14 +274,13 @@ multi_exp_fg!(n::Val{1}, ar...; kw...) = multi_src_fg!(ar...; kw...)
 
 function multi_exp_fg!(n::Val{N}, ar...; kw...) where N
     f = zeros(Float32, N)
-    G = ar[1]          # Первый аргумент — градиент (может быть кортежем)
-    println("typeof(G): $(typeof(G))")
-    rest = ar[2:end]   # Остальные аргументы (модель, источники, данные)
+    G = ar[1]          # Gradient accumulator (possibly a tuple)
+    rest = ar[2:end]   # Remaining arguments (model, source, data)
     
     @sync for i = 1:N
-        # Распаковываем ТОЛЬКО остальные аргументы по экспериментам
+        # Unpack only experiment-dependent arguments
         ai_rest = ntuple(j -> get_exp(rest[j], i), length(rest))
-        # Первый аргумент (градиент) передаём как есть для ВСЕХ экспериментов
+        # First argument (gradient accumulator) is shared
         ai = (G, ai_rest...)
         @async f[i] = multi_src_fg!(ai...; kw...)
     end
