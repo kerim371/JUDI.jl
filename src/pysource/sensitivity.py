@@ -1,12 +1,11 @@
 import numpy as np
-from sympy import exp, sqrt
+from sympy import exp, log, pi, sqrt
 
 from devito import Eq, grad
 from devito.tools import as_tuple
 
 from fields import frequencies
 from fields_exprs import sub_time
-from FD_utils import laplacian
 
 
 def func_name(freq=None, ic="as", is_viscoacoustic=False):
@@ -270,36 +269,42 @@ def Loss(dsyn, dobs, dt, is_residual=False, misfit=None):
 # =================== QFWI VISCO GRADIENTS ===================
 
 
-def _tau_from_qp(qp):
-    """Dimensionless relaxation factor τ(Qp) from Eq. (8)-(9)."""
-    a = sqrt(1 + 1 / qp**2)
-    # τ = τε/τσ - 1 = 2 / (sqrt(1 + 1/Q^2) - 1)
-    return 2 / (a - 1)
+def _beta_kf(freq_hz, f0_hz):
+    """
+    Real-valued part of β(ω) for Kolsky-Futterman dispersion:
+    Re{β(ω)} = -(2/π) log(ω/ω0).
+
+    Note: the imaginary constant part of β would introduce complex-valued
+    symbols in time-domain kernels and break C code generation in Devito
+    (`_Complex_I` emission). We therefore use the real part in stencil-level
+    expressions.
+    """
+    return -(2 / pi) * log(freq_hz / f0_hz)
 
 
-def _dtau_dqp(qp):
-    """Derivative dτ/dQp used for chain-rule Qp gradients."""
-    a = sqrt(1 + 1 / qp**2)
-    # d/dQ [2/(a-1)], a=sqrt(1+Q^-2)
-    return 2 / (qp**3 * a * (a - 1)**2)
+def _keating_base_terms(p, p_adj, model, beta):
+    """
+    Symbolic kernels for gradients in Keating & Innanen (2019).
 
-
-def _qfwi_common_terms(u, v, model):
-    """Common symbolic terms used by both time and frequency QFWI gradients."""
-    p = as_tuple(u)[0]
-    p_adj = as_tuple(v)[0]
-
+    Gradients are first formed in (s_c0, s_Q) with:
+      s_c0 = γ c0^-2 = γ m,  s_Q = Q^-1 = 1/qp,
+    then mapped by chain rule to (vp, qp) used by JUDI.
+    """
     vp = 1 / sqrt(model.m)
     qp = model.qp
-    tau = _tau_from_qp(qp)
+    sq = 1 / qp
+    gamma = 1e6
 
-    # Eq. (16): (2/v^3 * dp/dt - τ/(2v^2) * (-Δp)) * p*
-    lap_p = -laplacian(p, model.irho)
-    gv = ((2 / vp**3) * p.dt - (tau / (2 * vp**2)) * lap_p) * p_adj
+    # Paper equations (6)-(7): dphi/ds_c0 and dphi/ds_Q kernels
+    g_sc0 = (1 / gamma) * (1 + beta * sq) * p * p_adj
+    g_sq = (beta * (gamma * model.m)) * p * p_adj
 
-    # Chain rule proxy for Qp from τ(Qp)-dependent term in Eq. (16).
-    gqp = (-(1 / (2 * vp**2)) * lap_p * p_adj) * _dtau_dqp(qp)
-    return gv, gqp
+    # Chain rule to requested parameters vp and qp.
+    dsc0_dvp = -2 * gamma / vp**3
+    dsq_dqp = -1 / qp**2
+    g_vp = g_sc0 * dsc0_dvp
+    g_qp = g_sq * dsq_dqp
+    return g_vp, g_qp
 
 
 def isic_visco_time(u, v, model, **kwargs):
@@ -311,7 +316,17 @@ def isic_visco_time(u, v, model, **kwargs):
       - ``grad_q``: Qp-sensitive update
     """
     w = kwargs.get('w') or as_tuple(u)[0].indices[0].spacing * model.irho
-    gv, gqp = _qfwi_common_terms(u, v, model)
+    p = as_tuple(u)[0]
+    p_adj = as_tuple(v)[0]
+
+    # Time-domain implementation uses a real-valued proxy for β near f0.
+    # We avoid the complex unit from β=i-2/pi*log(ω/ω0), but keep a non-zero
+    # attenuation sensitivity by taking β≈1 in time-domain accumulation.
+    f0 = kwargs.get('f0', 0.015)  # kept for API symmetry with frequency path
+    beta0 = 1.0
+
+    # Use p_tt as the time-domain analogue of ω² u(ω).
+    gv, gqp = _keating_base_terms(p.dt2, p_adj, model, beta0)
     return {"grad_m": w * gv, "grad_q": w * gqp}
 
 
@@ -320,20 +335,23 @@ def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
     Frequency-domain QFWI gradients (weighted IDFT accumulation).
     """
     p = as_tuple(u)[0]
+    p_adj = as_tuple(v)[0]
     time = model.grid.time_dim
     tsave, factor = sub_time(time, dft_sub)
     fdim = as_tuple(u)[0][0].dimensions[0]
     f, _ = frequencies(freq, fdim=fdim)
     omega = 2 * np.pi * f
+    f0 = kwargs.get('f0', 0.015)
+    beta = _beta_kf(f, f0)
 
     omega_t = omega * tsave * factor * time.spacing
     idft_weight = exp(1j * omega_t)
     spectral_w = -(omega**2) / time.symbolic_max
 
-    gv, gqp = _qfwi_common_terms(u, v, model)
+    gv_base, gqp_base = _keating_base_terms(p, p_adj, model, beta)
     return {
-        "grad_m": spectral_w * idft_weight * gv,
-        "grad_q": spectral_w * idft_weight * gqp
+        "grad_m": spectral_w * idft_weight * gv_base,
+        "grad_q": spectral_w * idft_weight * gqp_base
     }
 
 
