@@ -58,7 +58,7 @@ function fwa(x::AbstractArray{T}, y::AbstractArray{T}) where {T<:Real}
     ω = _abs_omega(nt, one(T))
 
     r = similar(X)
-    f = zero(T)
+    f = Base.zero(T)
 
     @inbounds for ir = 1:nr
         ux = @view X[:, ir]
@@ -73,7 +73,7 @@ function fwa(x::AbstractArray{T}, y::AbstractArray{T}) where {T<:Real}
 
         f += T(0.5) * sum(abs2, ΔA)
 
-        RU = fft(ΔA) .* ω .* Ux ./ (abs.(Ux) .+ eps(T))
+        RU = fft(ΔA) .* ω .* Ux ./ (abs.(Ux) .+ Base.eps(T))
         r[:, ir] .= real(ifft(RU))
     end
 
@@ -100,7 +100,7 @@ function icf(x::AbstractArray{T}, y::AbstractArray{T}) where {T<:Real}
     ω = _abs_omega(nt, one(T))
 
     r = similar(X)
-    f = zero(T)
+    f = Base.zero(T)
 
     @inbounds for ir = 1:nr
         ux = @view X[:, ir]
@@ -111,14 +111,14 @@ function icf(x::AbstractArray{T}, y::AbstractArray{T}) where {T<:Real}
         Ax2 = abs2.(Ux)
         Ay2 = abs2.(Uy)
 
-        cux = sum(ω .* Ax2) / (sum(Ax2) + eps(T))
-        cuy = sum(ω .* Ay2) / (sum(Ay2) + eps(T))
+        cux = sum(ω .* Ax2) / (sum(Ax2) + Base.eps(T))
+        cuy = sum(ω .* Ay2) / (sum(Ay2) + Base.eps(T))
         Δc = cux - cuy
 
         f += T(0.5) * Δc^2
 
         # Adjoint source surrogate with centroid weighting.
-        W = (ω .- cux) ./ (sum(Ax2) + eps(T))
+        W = (ω .- cux) ./ (sum(Ax2) + Base.eps(T))
         r[:, ir] .= real(ifft(2 * Δc .* W .* Ux))
     end
 
