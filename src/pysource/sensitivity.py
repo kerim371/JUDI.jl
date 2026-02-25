@@ -1,5 +1,5 @@
 import numpy as np
-from sympy import exp, log
+from sympy import exp, sqrt
 
 from devito import Eq, grad
 from devito.tools import as_tuple
@@ -270,186 +270,82 @@ def Loss(dsyn, dobs, dt, is_residual=False, misfit=None):
 # =================== QFWI VISCO GRADIENTS ===================
 
 
+def _tau_from_qp(qp):
+    """Dimensionless relaxation factor τ(Qp) from Eq. (8)-(9)."""
+    a = sqrt(1 + 1 / qp**2)
+    # τ = τε/τσ - 1 = 2 / (sqrt(1 + 1/Q^2) - 1)
+    return 2 / (a - 1)
 
-def isic_visco_time(u, v, model, f0=0.015, **kwargs):
+
+def _dtau_dqp(qp):
+    """Derivative dτ/dQp used for chain-rule Qp gradients."""
+    a = sqrt(1 + 1 / qp**2)
+    # d/dQ [2/(a-1)], a=sqrt(1+Q^-2)
+    return 2 / (qp**3 * a * (a - 1)**2)
+
+
+def _qfwi_common_terms(u, v, model):
+    """Common symbolic terms used by both time and frequency QFWI gradients."""
+    p = as_tuple(u)[0]
+    p_adj = as_tuple(v)[0]
+
+    vp = 1 / sqrt(model.m)
+    qp = model.qp
+    tau = _tau_from_qp(qp)
+
+    # Eq. (16): (2/v^3 * dp/dt - τ/(2v^2) * (-Δp)) * p*
+    lap_p = -laplacian(p, model.irho)
+    gv = ((2 / vp**3) * p.dt - (tau / (2 * vp**2)) * lap_p) * p_adj
+
+    # Chain rule proxy for Qp from τ(Qp)-dependent term in Eq. (16).
+    gqp = (-(1 / (2 * vp**2)) * lap_p * p_adj) * _dtau_dqp(qp)
+    return gv, gqp
+
+
+def isic_visco_time(u, v, model, **kwargs):
     """
-    ISIC-style gradient for viscoacoustic QFWI in time domain.
-    
-    Implements physically distinct gradients for velocity and attenuation
-    to minimize parameter cross-talk as described in:
-    
-    "Parameter cross-talk and modelling errors in viscoacoustic 
-    seismic full waveform inversion"
-    
-    Returns:
-        dict with keys:
-          - 'grad_m': gradient w.r.t. slowness squared (m = 1/v²)
-          - 'grad_q': gradient w.r.t. inverse quality factor (1/Q)
-    
-    Physics:
-    - grad_m: sensitive to TRAVELTIME variations (velocity structure)
-    - grad_q: sensitive to AMPLITUDE decay (attenuation structure)
-    
-    The 90° phase shift between pressure (p) and memory variable (r) creates
-    the necessary distinction between velocity and attenuation updates.
+    Time-domain QFWI gradients for Vp and Qp, based on Eq. (16) with τ(Qp).
+
+    Returns a dict with keys used by `grad_expr_multi`:
+      - ``grad_m``: Vp-sensitive update (stored in gradm slot)
+      - ``grad_q``: Qp-sensitive update
     """
-    u_tuple = as_tuple(u)
-    v_tuple = as_tuple(v)
-
-    p = u_tuple[0]
-    p_adj = v_tuple[0]
-    has_memory = len(u_tuple) > 1 and model.is_viscoacoustic
-    r = u_tuple[1] if has_memory else None
-
-    gamma = kwargs.get('gamma', 1e6)
-    sQ = kwargs.get('sQ', getattr(model, 'sQ', None))
-    if sQ is None:
-        sQ = 1.0 / model.qp if hasattr(model, 'qp') else 0.0
-
-    sc0 = kwargs.get('sc0', getattr(model, 'sc0', None))
-    if sc0 is None:
-        sc0 = gamma * model.m
-
-    w = (kwargs.get('w') or p.indices[0].spacing * model.irho)
-    ics = kwargs.get('icsign', 1)
-
-    # Real part of β cannot be represented exactly in time-domain without explicit
-    # frequency decomposition; keep the phase-sensitive (imaginary) component through
-    # the memory variable and use it consistently in both parameter gradients.
-    cross_term = w * p_adj.dt2 * p
-    phase_term = w * (p_adj * r.dt - r * p_adj.dt) if has_memory else w * p_adj * p.dt
-    beta_cross = phase_term - ics * inner_grad(p, p_adj)
-
-    grad_m = (cross_term + sQ * beta_cross) / gamma
-    grad_q = sc0 * beta_cross
-
-    return {"grad_m": grad_m, "grad_q": grad_q}
+    w = kwargs.get('w') or as_tuple(u)[0].indices[0].spacing * model.irho
+    gv, gqp = _qfwi_common_terms(u, v, model)
+    return {"grad_m": w * gv, "grad_q": w * gqp}
 
 
-def isic_visco_freq(u, v, model, f0=0.015, freq=None, dft_sub=None, **kwargs):
+def isic_visco_freq(u, v, model, freq=None, dft_sub=None, **kwargs):
     """
-    Frequency-domain gradient for viscoacoustic QFWI with SAFE two-gradient return.
-
-    Reference frequency selection (omega0):
-    - ``f0`` must be provided explicitly by the user.
-    
-    Implements physically distinct gradients for velocity and attenuation
-    while avoiding Devito operator compilation errors caused by field name conflicts.
-    
-    Returns:
-        dict with STANDARD Devito gradient names:
-          - 'gradm': gradient w.r.t. slowness squared (m = 1/v²)
-          - 'gradq': gradient w.r.t. inverse quality factor (1/Q)
-    
-    Critical design:
-    1. Uses TIME-DOMAIN physics (memory variable r) for gradient separation
-    2. Applies frequency weighting ω² to both gradients for spectral sensitivity
-    3. Returns SINGLE symbolic expression that encodes BOTH gradients via
-       Devito's Tuple mechanism (avoids field name conflicts)
-    4. Full gradient separation happens in post-processing via judiGradient structure
-    
-    Note: For maximum accuracy, use time-domain (IC="visco") without freq_list.
-    This frequency-domain version provides approximate but functional gradients.
+    Frequency-domain QFWI gradients (weighted IDFT accumulation).
     """
-    u_tuple = as_tuple(u)
-    v_tuple = as_tuple(v)
-
-    p = u_tuple[0]
-    p_adj = v_tuple[0]
-
-    gamma = kwargs.get('gamma', 1e6)
-    sQ = kwargs.get('sQ', getattr(model, 'sQ', None))
-    if sQ is None:
-        sQ = 1.0 / model.qp if hasattr(model, 'qp') else 0.0
-
-    sc0 = kwargs.get('sc0', getattr(model, 'sc0', None))
-    if sc0 is None:
-        sc0 = gamma * model.m
-
+    p = as_tuple(u)[0]
     time = model.grid.time_dim
     tsave, factor = sub_time(time, dft_sub)
     fdim = as_tuple(u)[0][0].dimensions[0]
     f, _ = frequencies(freq, fdim=fdim)
     omega = 2 * np.pi * f
 
-    # Reference frequency for the KF logarithmic term is user-defined.
-
-    omega0 = 2 * np.pi * float(f0)
     omega_t = omega * tsave * factor * time.spacing
+    idft_weight = exp(1j * omega_t)
+    spectral_w = -(omega**2) / time.symbolic_max
 
-    # β(ω) = i - 2/pi * log(ω/ω0)
-    beta = 1j - (2.0 / np.pi) * log(omega / omega0)
-    w = -(omega**2) / time.symbolic_max
-    idftu = p * exp(1j * omega_t)
-    cross = w * idftu * p_adj
-
-    grad_m = (1.0 / gamma) * (1 + beta * sQ) * cross
-    grad_q = (beta * sc0) * cross
-
-    return {"grad_m": grad_m, "grad_q": grad_q}
+    gv, gqp = _qfwi_common_terms(u, v, model)
+    return {
+        "grad_m": spectral_w * idft_weight * gv,
+        "grad_q": spectral_w * idft_weight * gqp
+    }
 
 
-def isic_visco_src(model, u, param="sc0", **kwargs):
+def isic_visco_src(model, u, **kwargs):
     """
-    ISIC-style source for linearized QFWI modeling.
-    
-    Parameters:
-    ----------
-    model: Model
-        Contains perturbations dsc0 and dsQ
-    u: TimeFunction or Tuple
-        Forward wavefield
-    param: str
-        Which parameter perturbation to use ('sc0' or 'sQ')
+    Linearized visco source term.
+
+    For viscoacoustic modeling in this code path we inject perturbations through
+    ``dm`` (Vp-related) as before, while Qp updates are handled in adjoint gradient
+    accumulation (``grad_q``).
     """
-    u_tuple = as_tuple(u)
-    ics = kwargs.get('icsign', 1)
-    
-    if param == "sc0":
-        # Perturbation for sc0
-        dsc0 = model.dsc0 if hasattr(model, 'dsc0') else model.dm
-        gamma = getattr(model, 'gamma', 1e6)
-        sQ = model.sQ if hasattr(model, 'sQ') else 1.0/model.qp if hasattr(model, 'qp') else 0.0
-        
-        w = -dsc0 * model.irho / gamma
-        
-        # Main term (A): ∂²u/∂t²
-        A = u_tuple[0].dt2
-        
-        # Gradient term (B): dispersion correction
-        if model.is_viscoacoustic and len(u_tuple) > 1:
-            r = u_tuple[1]
-            B = sQ * (r.dt)
-        else:
-            B = sQ * (u_tuple[0].dt)
-        
-        src = w * (A + ics * B)
-        
-    elif param == "sQ":
-        # Perturbation for sQ
-        dsQ = model.dsQ if hasattr(model, 'dsQ') else model.dq
-        sc0 = model.sc0 if hasattr(model, 'sc0') else model.m * getattr(model, 'gamma', 1e6)
-        
-        w = -dsQ * sc0 * model.irho
-        
-        # Main term (A): phase-shifted term
-        if model.is_viscoacoustic and len(u_tuple) > 1:
-            r = u_tuple[1]
-            A = (r.dt)
-        else:
-            A = (u_tuple[0].dt2)
-        
-        # Gradient term (B): spatial gradient term
-        B = 0  # Could implement if needed
-        
-        src = w * (A + ics * B)
-        
-    else:
-        raise ValueError(f"Unknown parameter: {param}")
-    
-    if model.is_tti:
-        return (src, src)
-    return src
+    return isic_src(model, u, **kwargs)
 
 def grad_expr_multi(grad_dict, u, v, model, w=None, f0=0.015, freq=None, dft_sub=None, ic="as"):
     """
