@@ -109,6 +109,7 @@ end
 kw_i(::Nothing, ::Integer) = nothing
 kw_i(b::Bool, ::Integer) = b
 kw_i(f::Function, ::Integer) = f
+kw_i(opt::ESFWIOptions, i::Integer) = opt[i]
 kw_i(msv::judiMultiSourceVector, i::Integer) = msv[i]
 kw_i(a::Vector{<:Array}, i::Integer) = a[length(a) == 1 ? 1 : i]
 kw_i(a::Array, ::Integer) = a

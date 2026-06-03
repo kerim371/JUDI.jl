@@ -1,15 +1,35 @@
 
-export fwi_objective, lsrtm_objective, fwi_objective!, lsrtm_objective!
+export fwi_objective, lsrtm_objective, fwi_objective!, lsrtm_objective!, ESFWIOptions
 
 # Type of accepted input
 Dtypes = Union{<:judiVector, NTuple{N, <:judiVector} where N, Vector{<:judiVector}, <:LazyMul}
 MTypes = Union{<:AbstractModel, NTuple{N, <:AbstractModel} where N, Vector{<:AbstractModel}}
 dmTypes = Union{dmType, NTuple{N, dmType} where N, Vector{dmType}}
 
+mutable struct ESFWIOptions
+    mu::Float32
+    hessian_mode::String
+    filter_eps::Float32
+end
+
+"""
+    ESFWIOptions(; mu=0f0, hessian_mode="identity", filter_eps=1f-3)
+
+Options for time-domain extended-source FWI. `hessian_mode` controls the
+data-domain Hessian approximation used to estimate the source extension:
+`"identity"`, `"scalar"`, `"wiener1d"`, or `"wiener2d"`.
+"""
+ESFWIOptions(; mu=0f0, hessian_mode="identity", filter_eps=1f-3) =
+    ESFWIOptions(Float32(mu), String(hessian_mode), Float32(filter_eps))
+
+Base.getindex(opt::ESFWIOptions, ::Integer) = opt
+subsample(opt::ESFWIOptions, srcnum::Int) = getindex(opt, srcnum)
+
+
 function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, dm, options::JUDIOptions;
                       nlind::Bool=false, lin::Bool=false, misfit::Function=mse, illum::Bool=false,
                       data_precon=nothing, model_precon=LinearAlgebra.I,
-                      extended_source::Bool=false, weights=nothing)
+                      extended_source::Bool=false, es_options::ESFWIOptions=ESFWIOptions())
     GC.gc(true)
     PythonCall.GC.gc()
     devito.clear_cache()
@@ -25,18 +45,13 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     # If model preconditioner is provided, apply it
     dm = isnothing(dm) ? dm : model_precon * dm
 
-    # Materialize user-provided extended-source weights before possible model limiting.
-    # If no weights are provided, they are generated after limiting so their shape matches `model`.
-    weights = extended_source ? _materialize_extended_source_weights(weights, model_full) : nothing
+    lin && extended_source && throw(ArgumentError("extended_source=true is only supported for fwi_objective"))
 
     # Limit model to area with sources/receivers
     if options.limit_m == true
         @juditime "Limit model to geometry" begin
             model = deepcopy(model_full)
             model, dm = limit_model_to_receiver_area(s_geometry, d_geometry, model, options.buffer_size; pert=dm)
-            if extended_source && !isnothing(weights)
-                _, weights = limit_model_to_receiver_area(s_geometry, d_geometry, deepcopy(model_full), options.buffer_size; pert=weights)
-            end
         end
     else
         model = model_full
@@ -55,12 +70,8 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
 
     # Set up coordinates
     @juditime "Sparse coords setup" begin
-        src_coords = extended_source ? nothing : setup_grid(s_geometry, size(model))  # shifts source coordinates by origin
+        src_coords = setup_grid(s_geometry, size(model))  # shifts source coordinates by origin
         rec_coords = setup_grid(d_geometry, size(model))    # shifts rec coordinates by origin
-    end
-
-    if extended_source
-        weights = _devito_extended_source_weights(weights, model, modelPy)
     end
 
     # Setup misfit function
@@ -77,12 +88,23 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
 
     length(options.frequencies) == 0 ? freqs = nothing : freqs = options.frequencies
 
-    @juditime "Python call to J_adjoint" begin
-        argout = wrapcall_data(ac.J_adjoint, modelPy, src_coords, qIn, rec_coords, dObserved, t_sub=options.subsampling_factor,
-                                checkpointing=options.optimal_checkpointing,
-                                freq_list=freqs, ic=options.IC, is_residual=false, born_fwd=lin, nlind=nlind,
-                                dft_sub=options.dft_subsampling_factor[1], f0=options.f0, return_obj=true,
-                                misfit=mfunc, illum=illum, ws=weights)
+    if extended_source
+        !isnothing(freqs) && throw(ArgumentError("extended_source=true does not support frequency-compressed gradients"))
+        options.optimal_checkpointing && throw(ArgumentError("extended_source=true does not support optimal checkpointing"))
+        @juditime "Python call to es_fwi_func" begin
+            argout = wrapcall_data(ac.es_fwi_func, modelPy, src_coords, qIn, rec_coords, dObserved,
+                                   mu=es_options.mu, hessian_mode=es_options.hessian_mode,
+                                   filter_eps=es_options.filter_eps, ic=options.IC, f0=options.f0,
+                                   misfit=mfunc, illum=illum)
+        end
+    else
+        @juditime "Python call to J_adjoint" begin
+            argout = wrapcall_data(ac.J_adjoint, modelPy, src_coords, qIn, rec_coords, dObserved, t_sub=options.subsampling_factor,
+                                    checkpointing=options.optimal_checkpointing,
+                                    freq_list=freqs, ic=options.IC, is_residual=false, born_fwd=lin, nlind=nlind,
+                                    dft_sub=options.dft_subsampling_factor[1], f0=options.f0, return_obj=true,
+                                    misfit=mfunc, illum=illum)
+        end
     end
 
     @juditime "Remove padding from gradient" begin
@@ -90,7 +112,7 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     end
 
     fval = Ref{Float32}(argout[1])
-    if illum
+    if illum && length(argout) >= 4
         @juditime "Process illumination" begin
             illumu = PhysicalParameter(remove_padding(argout[3], modelPy.padsizes; true_adjoint=false), spacing(model), origin(model))
             illumv = PhysicalParameter(remove_padding(argout[4], modelPy.padsizes; true_adjoint=false), spacing(model), origin(model))
@@ -98,17 +120,6 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
         return fval, grad, illumu, illumv
     end
     return fval, grad
-end
-
-
-_materialize_extended_source_weights(::Nothing, ::AbstractModel) = nothing
-_materialize_extended_source_weights(w::judiWeights, ::AbstractModel) = make_input(w)
-_materialize_extended_source_weights(w::AbstractArray, model::AbstractModel) = convert(Array{Float32}, reshape(w, size(model)))
-
-function _devito_extended_source_weights(weights, model::AbstractModel, modelPy::Py)
-    shape = pyconvert(Tuple, modelPy.shape)
-    weights = isnothing(weights) ? randn(Float32, size(model)) : weights
-    return pad_array(reshape(weights, shape), modelPy.padsizes; mode=:zeros)
 end
 
 multi_src_fg = retry(_multi_src_fg)
@@ -153,12 +164,11 @@ end
 ################################################################################################
 
 """
-    fwi_objective(model, source, dobs; options=Options(), extended_source=false, weights=nothing)
+    fwi_objective(model, source, dobs; options=Options(), extended_source=false, es_options=ESFWIOptions())
 
     Evaluate the full-waveform-inversion (reduced state) objective function. Returns a tuple with function value and vectorized \\
 gradient. `model` is a `Model` structure with the current velocity model and `source` and `dobs` are the wavelets and \\
-observed data of type `judiVector`. If `extended_source=true`, `source` supplies the time wavelet, while `weights` supplies \
-the spatial source weights as a `judiWeights` object or array. When `weights` is omitted, random weights are generated.
+observed data of type `judiVector`. If `extended_source=true`, JUDI estimates the source extension from the data residual using `es_options` and forms the gradient with the reconstructed extended wavefield.
 
 Example
 =======
@@ -190,12 +200,11 @@ function lsrtm_objective(model::MTypes, q::Dtypes, dobs::Dtypes, dm::dmTypes; op
 end
 
 """
-    fwi_objective!(G, model, source, dobs; options=Options(), extended_source=false, weights=nothing)
+    fwi_objective!(G, model, source, dobs; options=Options(), extended_source=false, es_options=ESFWIOptions())
 
     Evaluate the full-waveform-inversion (reduced state) objective function. Returns a the function value and assigns in-place \
 the gradient to G. `model` is a `Model` structure with the current velocity model and `source` and `dobs` are the wavelets and \
-observed data of type `judiVector`. If `extended_source=true`, `source` supplies the time wavelet, while `weights` supplies \
-the spatial source weights as a `judiWeights` object or array. When `weights` is omitted, random weights are generated.
+observed data of type `judiVector`. If `extended_source=true`, JUDI estimates the source extension from the data residual using `es_options` and forms the gradient with the reconstructed extended wavefield.
 
 Example
 =======
