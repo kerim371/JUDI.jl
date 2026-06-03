@@ -11,6 +11,15 @@ from devito import Operator, Function, Constant
 from devito.tools import as_tuple
 
 
+def _operator_kwargs(op, kw):
+    """Keep only runtime arguments accepted by a Devito Operator."""
+    try:
+        accepted = {getattr(p, "name", p) for p in op.parameters}
+    except AttributeError:
+        return kw
+    return {name: value for name, value in kw.items() if name in accepted}
+
+
 # Forward propagation
 def forward(model, src_coords, rcv_coords, wavelet, save=False,
             qwf=None, return_op=False, freq_list=None, dft_sub=None,
@@ -282,7 +291,7 @@ def forward_grad(model, src_coords, rcv_coords, wavelet, v,
         rv = memory_field(v)
         kw.update({r.name: r, rv.name: rv})
 
-    summary = op(**kw)
+    summary = op(**_operator_kwargs(op, kw))
 
     # Output
     return rcv, gradm, summary
