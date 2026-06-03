@@ -304,13 +304,70 @@ def _match_filter_2d(raw, blurred, eps=1e-3):
     return np.fft.irfftn(filt * d_raw, s=shape, axes=(0, 1)).astype(raw.dtype)
 
 
+def _gabor_centers(n, sigma):
+    """Return regularly spaced Gabor window centers for an axis."""
+    sigma = float(sigma) if sigma and sigma > 0 else max(float(n) / 8.0, 1.0)
+    step = max(int(round(sigma)), 1)
+    centers = list(range(0, n, step))
+    if not centers or centers[-1] != n - 1:
+        centers.append(n - 1)
+    return centers, sigma
+
+
+def _gaussian_window(n, center, sigma, dtype):
+    axis = np.arange(n, dtype=np.float32)
+    win = np.exp(-0.5 * ((axis - float(center)) / max(float(sigma), 1.0))**2)
+    return win.astype(dtype, copy=False)
+
+
+def _match_filter_gabor_1d(raw, blurred, eps=1e-3, sigma_t=None):
+    """Trace-by-trace nonstationary Gabor/Wiener approximation of H_d^{-1}."""
+    ntime = raw.shape[0]
+    centers_t, sigma_t = _gabor_centers(ntime, sigma_t)
+    out = np.zeros_like(raw)
+    weight = np.zeros((ntime, 1), dtype=raw.dtype)
+    for ct in centers_t:
+        wt = _gaussian_window(ntime, ct, sigma_t, raw.dtype)[:, None]
+        d_raw = np.fft.rfft(raw * wt, axis=0)
+        d_blur = np.fft.rfft(blurred * wt, axis=0)
+        denom = np.abs(d_blur)**2 + _safe_damping(d_blur, eps=eps)
+        filt = d_raw * np.conj(d_blur) / denom
+        local = np.fft.irfft(filt * d_raw, n=ntime, axis=0).astype(raw.dtype)
+        out += wt * local
+        weight += wt * wt
+    return (out / np.maximum(weight, np.finfo(raw.dtype).eps)).astype(raw.dtype)
+
+
+def _match_filter_gabor_2d(raw, blurred, eps=1e-3, sigma_t=None, sigma_r=None):
+    """Time/receiver nonstationary Gabor matching-filter approximation."""
+    ntime, nrec = raw.shape
+    centers_t, sigma_t = _gabor_centers(ntime, sigma_t)
+    centers_r, sigma_r = _gabor_centers(nrec, sigma_r if sigma_r is not None else max(nrec / 4.0, 1.0))
+    out = np.zeros_like(raw)
+    weight = np.zeros_like(raw)
+    for ct in centers_t:
+        wt = _gaussian_window(ntime, ct, sigma_t, raw.dtype)[:, None]
+        for cr in centers_r:
+            wr = _gaussian_window(nrec, cr, sigma_r, raw.dtype)[None, :]
+            win = wt * wr
+            d_raw = np.fft.rfftn(raw * win, axes=(0, 1))
+            d_blur = np.fft.rfftn(blurred * win, axes=(0, 1))
+            denom = np.abs(d_blur)**2 + _safe_damping(d_blur, eps=eps)
+            filt = d_raw * np.conj(d_blur) / denom
+            local = np.fft.irfftn(filt * d_raw, s=raw.shape, axes=(0, 1)).astype(raw.dtype)
+            out += win * local
+            weight += win * win
+    return (out / np.maximum(weight, np.finfo(raw.dtype).eps)).astype(raw.dtype)
+
+
 def _weighted_data_residual(model, rec_coords, residual, mu=0, mode="identity",
                             filter_eps=1e-3, f0=0.015, fw=True):
     """
     Approximate H_d^{-1} residual in the data domain for ES-FWI.
 
     `identity` skips the Hessian approximation, `scalar` uses the scalar-fitting
-    approximation, and `wiener1d`/`wiener2d` use stationary matching filters.
+    approximation, `wiener1d`/`wiener2d` use stationary matching filters, and
+    `gabor1d`/`gabor2d` use nonstationary Gaussian-windowed matching filters.
     """
     mode = str(mode).lower()
     if mode in ("identity", "none", "no_hessian"):
@@ -332,6 +389,10 @@ def _weighted_data_residual(model, rec_coords, residual, mu=0, mode="identity",
         return _match_filter_1d(residual, blurred, eps=filter_eps)
     if mode in ("wiener2d", "2d-wmf", "wmf2d"):
         return _match_filter_2d(residual, blurred, eps=filter_eps)
+    if mode in ("gabor1d", "1d-gmf", "gmf1d"):
+        return _match_filter_gabor_1d(residual, blurred, eps=filter_eps)
+    if mode in ("gabor2d", "2d-gmf", "gmf2d"):
+        return _match_filter_gabor_2d(residual, blurred, eps=filter_eps)
     raise ValueError("Unknown ES-FWI data-domain Hessian mode `%s`" % mode)
 
 

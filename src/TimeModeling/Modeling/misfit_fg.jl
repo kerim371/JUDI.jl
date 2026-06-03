@@ -17,7 +17,7 @@ end
 
 Options for time-domain extended-source FWI. `hessian_mode` controls the
 data-domain Hessian approximation used to estimate the source extension:
-`"identity"`, `"scalar"`, `"wiener1d"`, or `"wiener2d"`.
+`"identity"`, `"scalar"`, `"wiener1d"`, `"wiener2d"`, `"gabor1d"`, or `"gabor2d"`.
 """
 ESFWIOptions(; mu=0f0, hessian_mode="identity", filter_eps=1f-3) =
     ESFWIOptions(Float32(mu), String(hessian_mode), Float32(filter_eps))

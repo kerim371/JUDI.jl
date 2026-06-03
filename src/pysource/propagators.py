@@ -234,8 +234,11 @@ def born(model, src_coords, rcv_coords, wavelet, save=False,
 def forward_grad(model, src_coords, rcv_coords, wavelet, v,
                  q=None, ws=None, ic="as", w=None, freq=None, f0=0.015, **kwargs):
     """
-    Low level propagator, to be used through `interface.py`
-    Compute forward wavefield u = A(m)^{-1}*f and related quantities (u(xrcv))
+    Low level propagator, to be used through `interface.py`.
+
+    Propagate the physical source plus an optional full-wavefield source `q`
+    and accumulate the model gradient by correlating the propagated wavefield
+    `u` with a supplied adjoint/source-extension wavefield `v`.
     """
     # Space order
     space_order = model.space_order
@@ -243,10 +246,10 @@ def forward_grad(model, src_coords, rcv_coords, wavelet, v,
     nt = as_tuple(q)[0].shape[0] if wavelet is None else wavelet.shape[0]
 
     # Setting forward wavefield
-    u = wavefield(model, space_order, save=False)
+    u = wavefield(model, space_order, save=False, nt=nt)
 
-    # Add extended source
-    q = q or 0
+    # Add low-rank extended source, if present, to the full-wavefield source.
+    q = q if q is not None else 0
     q = extented_src(model, ws, wavelet, q=q)
 
     # Set up PDE expression and rearrange
@@ -255,7 +258,7 @@ def forward_grad(model, src_coords, rcv_coords, wavelet, v,
     # Setup source and receiver
     gexpr = geom_expr(model, u, src_coords=src_coords, nt=nt,
                       rec_coords=rcv_coords, wavelet=wavelet)
-    _, rcv = src_rec(model, u, src_coords, rcv_coords, wavelet, nt)
+    src, rcv = src_rec(model, u, src_coords, rcv_coords, wavelet, nt)
 
     # Setup gradient wrt m
     gradm = Function(name="gradm", grid=model.grid)
@@ -268,7 +271,18 @@ def forward_grad(model, src_coords, rcv_coords, wavelet, v,
                   opt=opt_op(model))
 
     kw = base_kwargs(model.critical_dt)
-    summary = op(rcvu=rcv, **kw)
+    f0q = Constant('f0', value=f0) if model.is_viscoacoustic else None
+    kw.update(fields_kwargs(u, v, src, rcv, gradm, f0q))
+    kw.update(model.physical_params())
+    kw.update(model.abox(src, rcv, fw=True))
+
+    # SLS field
+    if model.is_viscoacoustic:
+        r = memory_field(u)
+        rv = memory_field(v)
+        kw.update({r.name: r, rv.name: rv})
+
+    summary = op(**kw)
 
     # Output
     return rcv, gradm, summary
