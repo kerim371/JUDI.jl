@@ -39,6 +39,22 @@ ftol = (tti | fs | viscoacoustic) ? 1f-1 : 1f-2
 
 end
 
+@testset "Extended-source FWI objective test with $(nlayer) layers and tti $(tti) and viscoacoustic $(viscoacoustic) and freesurface $(fs)" begin
+	Pr = judiProjection(recGeometry)
+	Pw = judiLRWF(q.geometry.dt, q.data)
+	Fext = Pr*judiModeling(model; options=opt)*adjoint(Pw)
+	Fext0 = Pr*judiModeling(model0; options=opt)*adjoint(Pw)
+	w = judiWeights(randn(Float32, model0.n); nsrc=q.nsrc)
+	dobs_ext = Fext*w
+	Jext = judiJacobian(Fext0, w)
+
+	Jm0, grad = fwi_objective(model0, q, dobs_ext; options=opt, extended_source=true, weights=w)
+	Jm01 = .5f0 * norm(Fext0*w - dobs_ext)^2
+	ghand = Jext'*(Fext0*w - dobs_ext)
+	@test Jm0 ≈ Jm01
+	@test isapprox(norm(grad - ghand)/norm(grad + ghand), 0f0; rtol=0, atol=ftol)
+end
+
 ###################################################################################################
 @testset "FWI preconditionners test with $(nlayer) layers and tti $(tti) and viscoacoustic $(viscoacoustic) and freesurface $(fs)" begin
 	Ml = judiDataMute(q.geometry, dobs.geometry; t0=.2)

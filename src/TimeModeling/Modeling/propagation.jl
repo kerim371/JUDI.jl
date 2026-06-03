@@ -106,9 +106,12 @@ function multi_src_fg!(G, model, q, dobs, dm; options=Options(), ms_func=multi_s
     return f
 end
 
+kw_i(::Nothing, ::Integer) = nothing
 kw_i(b::Bool, ::Integer) = b
 kw_i(f::Function, ::Integer) = f
 kw_i(msv::judiMultiSourceVector, i::Integer) = msv[i]
+kw_i(a::Vector{<:Array}, i::Integer) = a[length(a) == 1 ? 1 : i]
+kw_i(a::Array, ::Integer) = a
 kw_i(P::DataPreconditioner, i::Integer) = P[i]
 kw_i(P::ModelPreconditioner, ::Integer) = P
 kw_i(P::MultiPreconditioner{TP, T}, i::Integer) where {TP, T} = MultiPreconditioner{TP, T}([kw_i(Pi, i) for Pi in P.precs])

@@ -8,7 +8,8 @@ dmTypes = Union{dmType, NTuple{N, dmType} where N, Vector{dmType}}
 
 function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, dm, options::JUDIOptions;
                       nlind::Bool=false, lin::Bool=false, misfit::Function=mse, illum::Bool=false,
-                      data_precon=nothing, model_precon=LinearAlgebra.I)
+                      data_precon=nothing, model_precon=LinearAlgebra.I,
+                      extended_source::Bool=false, weights=nothing)
     GC.gc(true)
     PythonCall.GC.gc()
     devito.clear_cache()
@@ -24,11 +25,18 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     # If model preconditioner is provided, apply it
     dm = isnothing(dm) ? dm : model_precon * dm
 
+    # Materialize user-provided extended-source weights before possible model limiting.
+    # If no weights are provided, they are generated after limiting so their shape matches `model`.
+    weights = extended_source ? _materialize_extended_source_weights(weights, model_full) : nothing
+
     # Limit model to area with sources/receivers
     if options.limit_m == true
         @juditime "Limit model to geometry" begin
             model = deepcopy(model_full)
             model, dm = limit_model_to_receiver_area(s_geometry, d_geometry, model, options.buffer_size; pert=dm)
+            if extended_source && !isnothing(weights)
+                _, weights = limit_model_to_receiver_area(s_geometry, d_geometry, deepcopy(model_full), options.buffer_size; pert=weights)
+            end
         end
     else
         model = model_full
@@ -47,8 +55,12 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
 
     # Set up coordinates
     @juditime "Sparse coords setup" begin
-        src_coords = setup_grid(s_geometry, size(model))  # shifts source coordinates by origin
+        src_coords = extended_source ? nothing : setup_grid(s_geometry, size(model))  # shifts source coordinates by origin
         rec_coords = setup_grid(d_geometry, size(model))    # shifts rec coordinates by origin
+    end
+
+    if extended_source
+        weights = _devito_extended_source_weights(weights, model, modelPy)
     end
 
     # Setup misfit function
@@ -70,7 +82,7 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
                                 checkpointing=options.optimal_checkpointing,
                                 freq_list=freqs, ic=options.IC, is_residual=false, born_fwd=lin, nlind=nlind,
                                 dft_sub=options.dft_subsampling_factor[1], f0=options.f0, return_obj=true,
-                                misfit=mfunc, illum=illum)
+                                misfit=mfunc, illum=illum, ws=weights)
     end
 
     @juditime "Remove padding from gradient" begin
@@ -86,6 +98,17 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
         return fval, grad, illumu, illumv
     end
     return fval, grad
+end
+
+
+_materialize_extended_source_weights(::Nothing, ::AbstractModel) = nothing
+_materialize_extended_source_weights(w::judiWeights, ::AbstractModel) = make_input(w)
+_materialize_extended_source_weights(w::AbstractArray, model::AbstractModel) = convert(Array{Float32}, reshape(w, size(model)))
+
+function _devito_extended_source_weights(weights, model::AbstractModel, modelPy::Py)
+    shape = pyconvert(Tuple, modelPy.shape)
+    weights = isnothing(weights) ? randn(Float32, size(model)) : weights
+    return pad_array(reshape(weights, shape), modelPy.padsizes; mode=:zeros)
 end
 
 multi_src_fg = retry(_multi_src_fg)
@@ -130,11 +153,12 @@ end
 ################################################################################################
 
 """
-    fwi_objective(model, source, dobs; options=Options())
+    fwi_objective(model, source, dobs; options=Options(), extended_source=false, weights=nothing)
 
     Evaluate the full-waveform-inversion (reduced state) objective function. Returns a tuple with function value and vectorized \\
 gradient. `model` is a `Model` structure with the current velocity model and `source` and `dobs` are the wavelets and \\
-observed data of type `judiVector`.
+observed data of type `judiVector`. If `extended_source=true`, `source` supplies the time wavelet, while `weights` supplies \
+the spatial source weights as a `judiWeights` object or array. When `weights` is omitted, random weights are generated.
 
 Example
 =======
@@ -150,8 +174,8 @@ end
 """
     lsrtm_objective(model, source, dobs, dm; options=Options(), nlind=false)
 
-Evaluate the least-square migration objective function. Returns a tuple with function value and \\
-gradient. `model` is a `Model` structure with the current velocity model and `source` and `dobs` are the wavelets and \\
+Evaluate the least-square migration objective function. Returns a tuple with function value and \
+gradient. `model` is a `Model` structure with the current velocity model and `source` and `dobs` are the wavelets and \
 observed data of type `judiVector`.
 
 Example
@@ -166,11 +190,12 @@ function lsrtm_objective(model::MTypes, q::Dtypes, dobs::Dtypes, dm::dmTypes; op
 end
 
 """
-    fwi_objective!(G, model, source, dobs; options=Options())
+    fwi_objective!(G, model, source, dobs; options=Options(), extended_source=false, weights=nothing)
 
-    Evaluate the full-waveform-inversion (reduced state) objective function. Returns a the function value and assigns in-place \\
-the gradient to G. `model` is a `Model` structure with the current velocity model and `source` and `dobs` are the wavelets and \\
-observed data of type `judiVector`.
+    Evaluate the full-waveform-inversion (reduced state) objective function. Returns a the function value and assigns in-place \
+the gradient to G. `model` is a `Model` structure with the current velocity model and `source` and `dobs` are the wavelets and \
+observed data of type `judiVector`. If `extended_source=true`, `source` supplies the time wavelet, while `weights` supplies \
+the spatial source weights as a `judiWeights` object or array. When `weights` is omitted, random weights are generated.
 
 Example
 =======
