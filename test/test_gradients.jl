@@ -39,6 +39,14 @@ ftol = (tti | fs | viscoacoustic) ? 1f-1 : 1f-2
 
 end
 
+@testset "Extended-source FWI objective test with $(nlayer) layers and tti $(tti) and viscoacoustic $(viscoacoustic) and freesurface $(fs)" begin
+	esopt = ESFWIOptions(; mu=1f-3, hessian_mode="identity")
+	Jm0, grad = fwi_objective(model0, q, dobs; options=opt, extended_source=true, es_options=esopt)
+	@test isfinite(Jm0[])
+	@test size(grad) == size(model0)
+	@test all(isfinite, grad.data)
+end
+
 ###################################################################################################
 @testset "FWI preconditionners test with $(nlayer) layers and tti $(tti) and viscoacoustic $(viscoacoustic) and freesurface $(fs)" begin
 	Ml = judiDataMute(q.geometry, dobs.geometry; t0=.2)

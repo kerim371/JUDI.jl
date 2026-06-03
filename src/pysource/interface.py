@@ -276,6 +276,105 @@ def born_rec_w(model, weight, wavelet, rec_coords,
     return rec.data, getattr(I, "data", None)
 
 
+
+def _safe_damping(x, eps=1e-3):
+    """Small scalar damping scaled by the maximum spectral/data power."""
+    power = np.abs(x)**2
+    max_power = np.max(power) if power.size else 0
+    return eps * max_power + np.finfo(x.dtype if np.issubdtype(x.dtype, np.floating) else np.float32).eps
+
+
+def _match_filter_1d(raw, blurred, eps=1e-3):
+    """Trace-by-trace stationary Wiener approximation of H_d^{-1}."""
+    ntime = raw.shape[0]
+    d_raw = np.fft.rfft(raw, axis=0)
+    d_blur = np.fft.rfft(blurred, axis=0)
+    denom = np.abs(d_blur)**2 + _safe_damping(d_blur, eps=eps)
+    filt = d_raw * np.conj(d_blur) / denom
+    return np.fft.irfft(filt * d_raw, n=ntime, axis=0).astype(raw.dtype)
+
+
+def _match_filter_2d(raw, blurred, eps=1e-3):
+    """Stationary frequency-wavenumber Wiener approximation of H_d^{-1}."""
+    shape = raw.shape
+    d_raw = np.fft.rfftn(raw, axes=(0, 1))
+    d_blur = np.fft.rfftn(blurred, axes=(0, 1))
+    denom = np.abs(d_blur)**2 + _safe_damping(d_blur, eps=eps)
+    filt = d_raw * np.conj(d_blur) / denom
+    return np.fft.irfftn(filt * d_raw, s=shape, axes=(0, 1)).astype(raw.dtype)
+
+
+def _weighted_data_residual(model, rec_coords, residual, mu=0, mode="identity",
+                            filter_eps=1e-3, f0=0.015, fw=True):
+    """
+    Approximate H_d^{-1} residual in the data domain for ES-FWI.
+
+    `identity` skips the Hessian approximation, `scalar` uses the scalar-fitting
+    approximation, and `wiener1d`/`wiener2d` use stationary matching filters.
+    """
+    mode = str(mode).lower()
+    if mode in ("identity", "none", "no_hessian"):
+        return residual
+
+    # Build blurred data H_d residual = S S^T residual + mu * residual.
+    _, v_blur, _, _ = forward(model, rec_coords, None, residual, save=True,
+                              f0=f0, fw=not fw)
+    q_blur = wf_as_src(v_blur)
+    blurred_rec, _, _, _ = forward(model, None, rec_coords, None, qwf=q_blur,
+                                   f0=f0, fw=fw)
+    blurred = blurred_rec.data[:] + mu * residual
+
+    if mode in ("scalar", "sf", "scalar_fit", "scalar-fitting"):
+        denom = npdot(blurred, blurred) + _safe_damping(blurred, eps=filter_eps)
+        gamma = npdot(blurred, residual) / denom
+        return (gamma * residual).astype(residual.dtype)
+    if mode in ("wiener1d", "1d-wmf", "wmf1d"):
+        return _match_filter_1d(residual, blurred, eps=filter_eps)
+    if mode in ("wiener2d", "2d-wmf", "wmf2d"):
+        return _match_filter_2d(residual, blurred, eps=filter_eps)
+    raise ValueError("Unknown ES-FWI data-domain Hessian mode `%s`" % mode)
+
+
+def es_fwi_func(model, src_coords, wavelet, rec_coords, recin,
+                mu=0, hessian_mode="identity", filter_eps=1e-3,
+                ic="as", f0=0.015, misfit=None, illum=False, fw=True):
+    """
+    Time-domain extended-source FWI following the source-extension formulation.
+
+    The implementation computes the reduced FWI residual, estimates the source
+    extension delta b = S(m)^T H_d(m)^{-1} delta d, reconstructs the extended
+    wavefield by forward propagation with b + delta b, and forms the model
+    gradient by correlating the extended wavefield with the source extension.
+    """
+    # 1. Strict forward solve and FWI data residual delta d = d_obs - S b.
+    rec0, _, _, _ = forward(model, src_coords, rec_coords, wavelet, save=False,
+                            f0=f0, illum=False, fw=fw)
+    f_fwi, residual = Loss(rec0, recin, model.critical_dt, misfit=misfit)
+    residual = -residual
+
+    # 2. Approximate weighted residual H_d^{-1} delta d.
+    weighted_residual = _weighted_data_residual(model, rec_coords, residual,
+                                                mu=mu, mode=hessian_mode,
+                                                filter_eps=filter_eps, f0=f0,
+                                                fw=fw)
+
+    # 3. Source extension delta b = S^T H_d^{-1} delta d.
+    _, v_ext, _, _ = forward(model, rec_coords, None, weighted_residual,
+                             save=True, f0=f0, fw=not fw)
+    q_ext = wf_as_src(v_ext)
+
+    # 4. Forward solve with b + delta b and gradient wrt m.
+    rec_ext, gradm, _ = forward_grad(model, src_coords, rec_coords, wavelet,
+                                     v_ext, q=q_ext, ic=ic, f0=f0)
+
+    f_data, _ = Loss(rec_ext, recin, model.critical_dt, misfit=misfit)
+    source_norm = sum(np.linalg.norm(v.data[:])**2 for v in as_tuple(v_ext))
+    f_src = .5 * model.critical_dt * mu * source_norm
+    if illum:
+        return f_data + f_src, gradm.data, None, None
+    return f_data + f_src, gradm.data
+
+
 def J_adjoint(model, src_coords, wavelet, rec_coords, recin,
               is_residual=False, checkpointing=False, n_checkpoints=None, t_sub=1,
               return_obj=False, freq_list=[], dft_sub=None, ic="as", illum=False,
