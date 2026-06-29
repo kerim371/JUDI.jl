@@ -18,6 +18,7 @@ end
 using LinearAlgebra, Random, Printf
 using Distributed
 using DSP, FFTW, Dierckx
+using IterativeSolvers
 using PythonCall
 using JOLI, SegyIO
 using ChainRulesCore

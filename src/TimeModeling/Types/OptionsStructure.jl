@@ -23,6 +23,15 @@ mutable struct JUDIOptions
     return_array::Bool
     dt_comp::Union{Float32, Nothing}
     f0::Float32
+    # Extended source FWI options
+    extended_source::Bool
+    es_lambda::Float32
+    es_damp::Float32
+    es_atol::Float32
+    es_btol::Float32
+    es_conlim::Float32
+    es_maxiter::Int64
+    es_verbose::Bool
 end
 
 """
@@ -44,6 +53,14 @@ end
         return_array::Bool
         dt_comp::Real
         f0::Real
+        extended_source::Bool
+        es_lambda::Float32
+        es_damp::Float32
+        es_atol::Float32
+        es_btol::Float32
+        es_conlim::Float32
+        es_maxiter::Int64
+        es_verbose::Bool
 
 
 
@@ -83,8 +100,24 @@ Options structure for seismic modeling.
 
 `f0`: define peak frequency.
 
+`extended_source`: if `true`, enable extended source FWI with source weight estimation via LSQR.
+
+`es_lambda`: Tikhonov regularization parameter for source weight estimation.
+
+`es_damp`: damping parameter for LSQR solver.
+
+`es_atol`: stopping tolerance atol for LSQR solver.
+
+`es_btol`: stopping tolerance btol for LSQR solver.
+
+`es_conlim`: condition number limit for LSQR solver.
+
+`es_maxiter`: maximum number of LSQR iterations.
+
+`es_verbose`: if `true`, print LSQR convergence information.
+
 Constructor
-==========
+=========
 
 All arguments are optional keyword arguments with the following default values:
 
@@ -96,7 +129,10 @@ All arguments are optional keyword arguments with the following default values:
             num_checkpoints=nothing, checkpoints_maxmem=nothing,
             frequencies=[], isic=false,
             subsampling_factor=1, dft_subsampling_factor=1, return_array=false,
-            dt_comp=nothing, f0=0.015f0)
+            dt_comp=nothing, f0=0.015f0,
+            extended_source=false, es_lambda=0f0,
+            es_damp=0.0, es_atol=1e-6, es_btol=1e-6,
+            es_conlim=1e8, es_maxiter=100, es_verbose=false)
 
 """
 function Options(;space_order=8, free_surface=false,
@@ -111,6 +147,14 @@ function Options(;space_order=8, free_surface=false,
                   dt_comp=nothing,
                   f0=0.015f0,
                   IC="as",
+                  extended_source=false,
+                  es_lambda=0f0,
+                  es_damp=0.0,
+                  es_atol=1e-6,
+                  es_btol=1e-6,
+                  es_conlim=1e8,
+                  es_maxiter=100,
+                  es_verbose=false,
                   kw...)
     
     ic = imcond(get(kw, :isic, false), IC)
@@ -120,7 +164,9 @@ function Options(;space_order=8, free_surface=false,
     end
     return JUDIOptions(space_order, free_surface, limit_m, buffer_size, save_data_to_disk,
                 file_path, file_name, sum_padding, optimal_checkpointing, frequencies,
-                ic, subsampling_factor, dft_subsampling_factor, return_array, dt_comp, f0)
+                ic, subsampling_factor, dft_subsampling_factor, return_array, dt_comp, f0,
+                extended_source, es_lambda, es_damp, es_atol, es_btol,
+                es_conlim, es_maxiter, es_verbose)
 end
 
 JUDIOptions(;kw...) = Options(kw...)

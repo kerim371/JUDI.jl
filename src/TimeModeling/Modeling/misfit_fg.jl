@@ -45,9 +45,43 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     dObserved = time_resample(make_input(dObs), d_geometry, dtComp)
     qIn, dObserved = _maybe_pad_t0(qIn, s_geometry, dObserved, d_geometry, dtComp)
 
+    # Extended source FWI: estimate source weights via LSQR
+    if options.extended_source
+        @juditime "Extended source LSQR" begin
+            # Create wavelet operator from source temporal data
+            wavelet = make_input(source)
+            wavelet = vec(wavelet)
+            Pw = judiWavelet(s_geometry.dt[1], wavelet)
+
+            # Forward operator on cropped model
+            Fwd = judiModeling(model, s_geometry, d_geometry; options=options)
+            Pr = judiProjection(d_geometry)
+
+            # Extended source operator: F_ext = Pr * F * Pw'
+            F_ext = Pr * Fwd * adjoint(Pw)
+
+            # Initialize weights (zeros on cropped model)
+            w = judiWeights(zeros(Float32, model.n))
+
+            # Build regularized system: [F_ext; es_lambda * I] * w = [d_obs; 0]
+            I_op = joDirac(prod(model.n), DDT=Float32, RDT=Float32)
+            A_ext = [F_ext; options.es_lambda * I_op]
+            d_obs_w = judiWeights(zeros(Float32, model.n))
+            b_ext = [dObserved; d_obs_w]
+
+            # LSQR for source weights (like in extended_source_lsqr.jl)
+            lsqr!(w, A_ext, b_ext; damp=options.es_damp, atol=options.es_atol,
+                  btol=options.es_btol, conlim=options.es_conlim,
+                  maxiter=options.es_maxiter, verbose=options.es_verbose)
+
+            # Extract weight array (padded for Devito)
+            weights_array = vec(w.weights[1])
+        end
+    end
+
     # Set up coordinates
     @juditime "Sparse coords setup" begin
-        src_coords = setup_grid(s_geometry, size(model))  # shifts source coordinates by origin
+        src_coords = options.extended_source ? nothing : setup_grid(s_geometry, size(model))
         rec_coords = setup_grid(d_geometry, size(model))    # shifts rec coordinates by origin
     end
 
@@ -66,11 +100,26 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     length(options.frequencies) == 0 ? freqs = nothing : freqs = options.frequencies
 
     @juditime "Python call to J_adjoint" begin
-        argout = wrapcall_data(ac.J_adjoint, modelPy, src_coords, qIn, rec_coords, dObserved, t_sub=options.subsampling_factor,
-                                checkpointing=options.optimal_checkpointing,
-                                freq_list=freqs, ic=options.IC, is_residual=false, born_fwd=lin, nlind=nlind,
-                                dft_sub=options.dft_subsampling_factor[1], f0=options.f0, return_obj=true,
-                                misfit=mfunc, illum=illum)
+        if options.extended_source
+            argout = wrapcall_data(ac.J_adjoint, modelPy, nothing, qIn, rec_coords,
+                                    dObserved, ws=weights_array,
+                                    t_sub=options.subsampling_factor,
+                                    checkpointing=options.optimal_checkpointing,
+                                    freq_list=freqs, ic=options.IC, is_residual=false,
+                                    born_fwd=lin, nlind=nlind,
+                                    dft_sub=options.dft_subsampling_factor[1],
+                                    f0=options.f0, return_obj=true,
+                                    misfit=mfunc, illum=illum)
+        else
+            argout = wrapcall_data(ac.J_adjoint, modelPy, src_coords, qIn, rec_coords,
+                                    dObserved, t_sub=options.subsampling_factor,
+                                    checkpointing=options.optimal_checkpointing,
+                                    freq_list=freqs, ic=options.IC, is_residual=false,
+                                    born_fwd=lin, nlind=nlind,
+                                    dft_sub=options.dft_subsampling_factor[1],
+                                    f0=options.f0, return_obj=true,
+                                    misfit=mfunc, illum=illum)
+        end
     end
 
     @juditime "Remove padding from gradient" begin
