@@ -47,14 +47,15 @@ end
 # NLopt objective function
 count = 0
 fhistory = Float32[]
+batchsize = 16
 println("No.  ", "fval         ", "norm(gradient)")
 function f!(x,grad)
 
     # Update model
     model0.m .= convert(Array{Float32, 2}, reshape(x, model0.n))
 
-    # One shot for test (replace with batch as needed)
-    i = 1
+    # Random batch of shots
+    i = randperm(d_obs.nsrc)[1:batchsize]
     fval, gradient = fwi_objective(model0, q[i], d_obs[i]; options=opt_es)
 
     # Reset gradient in water column to zero
