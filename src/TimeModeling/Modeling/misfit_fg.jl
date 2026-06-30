@@ -106,8 +106,11 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
 
     @juditime "Python call to J_adjoint" begin
         if options.extended_source
+            # Pad weights to match Devito padded model (as in devito_interface for ES)
+            shape = pyconvert(Tuple, modelPy.shape)
+            weights_padded = pad_array(reshape(weights_array, shape), modelPy.padsizes; mode=:zeros)
             argout = wrapcall_data(ac.J_adjoint, modelPy, nothing, qIn, rec_coords,
-                                    dObserved, ws=weights_array,
+                                    dObserved, ws=weights_padded,
                                     t_sub=options.subsampling_factor,
                                     checkpointing=options.optimal_checkpointing,
                                     freq_list=freqs, ic=options.IC, is_residual=false,
