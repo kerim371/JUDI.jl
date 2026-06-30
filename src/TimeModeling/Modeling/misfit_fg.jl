@@ -70,9 +70,14 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
             # Build regularized system: [F_ext; es_lambda * I] * w = [d_obs; 0]
             I_op = joDirac(prod(model.n), DDT=Float32, RDT=Float32)
             A_ext = [F_ext; options.es_lambda * I_op]
-            # Convert dObs to judiVector with Matrix data for vcat compat with judiWeights
-            # dObserved is already a Matrix (resampled to dtComp)
-            d_obs_jv = judiVector(d_geometry, dObserved)
+            # Build weighted system via direct operations on arrays to avoid
+            # judiVector/SeisCon/Geometry temporal size mismatches.
+            # Use resampled dObserved (Matrix) directly with a temporary geometry
+            # that matches dObserved's temporal length.
+            nt_rs, nrec = size(dObserved)
+            d_geom_rs = Geometry(d_geometry.xloc, d_geometry.yloc, d_geometry.zloc;
+                                 dt=dtComp, t=nt_rs*dtComp, nsrc=1)
+            d_obs_jv = judiVector(d_geom_rs, dObserved)
             d_obs_w = judiWeights(zeros(Float32, model.n))
             b_ext = [d_obs_jv; d_obs_w]
 
