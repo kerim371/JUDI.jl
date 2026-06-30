@@ -1,4 +1,3 @@
-
 export fwi_objective, lsrtm_objective, fwi_objective!, lsrtm_objective!
 
 # Type of accepted input
@@ -21,7 +20,7 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     d_geometry = Geometry(dObs.geometry)
     s_geometry = Geometry(source.geometry)
     
-    # If model preconditioner is provid ed, apply it
+    # If model preconditioner is provided, apply it
     dm = isnothing(dm) ? dm : model_precon * dm
 
     # Limit model to area with sources/receivers
@@ -50,18 +49,15 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
         @juditime "Extended source LSQR" begin
             # Use raw wavelet from source (not resampled) so that
             # devito_interface can resample it to the correct dt internally.
-            wavelet_raw = make_input(source)  # (nt_src, 1) or (nt_src,)
+            wavelet_raw = make_input(source)
             if ndims(wavelet_raw) == 1
                 wavelet_raw = reshape(wavelet_raw, length(wavelet_raw), 1)
             end
             Pw = judiWavelet(s_geometry.dt[1], wavelet_raw)
 
-            # Build extended source operator as in extended_source_lsqr.jl:
-            #   F_ext = Pr * F(model_only) * Pw'
+            # Build extended source operator: F_ext = Pr * F * Pw'
             Fwd = judiModeling(model; options=options)
             Pr = judiProjection(d_geometry)
-
-            # Extended source operator: F_ext = Pr * F * Pw'
             F_ext = Pr * Fwd * adjoint(Pw)
 
             # Initialize weights (zeros on cropped model)
@@ -70,19 +66,10 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
             # Build regularized system: [F_ext; es_lambda * I] * w = [d_obs; 0]
             I_op = joDirac(prod(model.n), DDT=Float32, RDT=Float32)
             A_ext = [F_ext; options.es_lambda * I_op]
-            # Build weighted system via direct operations on arrays to avoid
-            # judiVector/SeisCon/Geometry temporal size mismatches.
-            # Use resampled dObserved (Matrix) directly with a simple geometry
-            # matching dObserved's temporal length.
-            nt_rs, nrec = size(dObserved)
-            d_geom_rs = Geometry(d_geometry.xloc[1], d_geometry.zloc[1];
-                                 dt=dtComp, t=nt_rs*dtComp)
-            d_obs_jv = judiVector(d_geom_rs, dObserved)
-            d_obs_w = judiWeights(zeros(Float32, model.n))
-            b_ext = [d_obs_jv; d_obs_w]
 
-            # LSQR for source weights
-            lsqr!(w, A_ext, b_ext; damp=options.es_damp, atol=options.es_atol,
+            # Build RHS as plain vector to avoid judiVector/judiWeights type issues
+            rhs_data = vcat(vec(dObserved), zeros(Float32, prod(model.n)))
+            lsqr!(w, A_ext, rhs_data; damp=options.es_damp, atol=options.es_atol,
                   btol=options.es_btol, conlim=options.es_conlim,
                   maxiter=options.es_maxiter, verbose=options.es_verbose)
 
@@ -94,12 +81,11 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     # Set up coordinates
     @juditime "Sparse coords setup" begin
         src_coords = options.extended_source ? nothing : setup_grid(s_geometry, size(model))
-        rec_coords = setup_grid(d_geometry, size(model))    # shifts rec coordinates by origin
+        rec_coords = setup_grid(d_geometry, size(model))
     end
 
     # Setup misfit function
     if !isnothing(data_precon)
-        # resample
         new_t = StepRangeLen(0f0, Float32(dtComp), Int64(size(dObserved, 1)))
         Pcomp  = time_resample(data_precon, new_t)
         runtime_misfit = (x, y) -> misfit(Pcomp*x, Pcomp*y)
@@ -113,7 +99,6 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
 
     @juditime "Python call to J_adjoint" begin
         if options.extended_source
-            # Pad weights to match Devito padded model (as in devito_interface for ES)
             shape = pyconvert(Tuple, modelPy.shape)
             weights_padded = pad_array(reshape(weights_array, shape), modelPy.padsizes; mode=:zeros)
             argout = wrapcall_data(ac.J_adjoint, modelPy, nothing, qIn, rec_coords,
@@ -156,24 +141,12 @@ multi_src_fg = retry(_multi_src_fg)
 
 
 # Find number of experiments
-"""
-    get_nexp(x)
-
-Get number of experiments given a JUDI type. By default we have only one experiment unless we input
-a Vector of judiType such as [model, model] to compute gradient for different cases at once.
-"""
 get_nexp(x) = 1
 for T in [judiVector, AbstractModel, judiWeights, judiWavefield, PhysicalParameter, Vector{Float32}]
     @eval get_nexp(v::Vector{<:$T}) = length(v)
     @eval get_nexp(v::Tuple{N, <:$T}) where N = length(v)
 end   
 
-# Filter arguments for given task
-"""
-    get_exp(x, i)
-
-Filter input `x`` for experiment number `i`. Returns `x` is a constant not depending on experiment.
-"""
 get_exp(x, i) = x
 get_exp(x::Tuple{}, i::Any) = x[i]
 for T in [judiVector, AbstractModel, judiWeights, judiWavefield, Array{Float32}, PhysicalParameter]
@@ -193,17 +166,6 @@ end
 ####################### User Interface #########################################################
 ################################################################################################
 
-"""
-    fwi_objective(model, source, dobs; options=Options())
-
-    Evaluate the full-waveform-inversion (reduced state) objective function. Returns a tuple with function value and vectorized \\
-gradient. `model` is a `Model` structure with the current velocity model and `source` and `dobs` are the wavelets and \\
-observed data of type `judiVector`.
-
-Example
-=======
-    function_value, gradient = fwi_objective(model, source, dobs)
-"""
 function fwi_objective(model::MTypes, q::Dtypes, dobs::Dtypes; options=Options(), kw...)
     n_exp = check_args(model, q, dobs)
     G = n_exp == 1 ? similar(model.m, model) : [similar(get_exp(model, i).m, get_exp(model, i)) for i=1:n_exp]
@@ -211,17 +173,6 @@ function fwi_objective(model::MTypes, q::Dtypes, dobs::Dtypes; options=Options()
     f, G
 end
 
-"""
-    lsrtm_objective(model, source, dobs, dm; options=Options(), nlind=false)
-
-Evaluate the least-square migration objective function. Returns a tuple with function value and \\
-gradient. `model` is a `Model` structure with the current velocity model and `source` and `dobs` are the wavelets and \\
-observed data of type `judiVector`.
-
-Example
-=======
-    function_value, gradient = lsrtm_objective(model, source, dobs, dm)
-"""
 function lsrtm_objective(model::MTypes, q::Dtypes, dobs::Dtypes, dm::dmTypes; options=Options(), nlind=false, kw...)
     n_exp = check_args(model, q, dobs, dm)
     G = n_exp == 1 ? similar(model.m, model) : [similar(get_exp(model, i).m, get_exp(model, i)) for i=1:n_exp]
@@ -229,33 +180,11 @@ function lsrtm_objective(model::MTypes, q::Dtypes, dobs::Dtypes, dm::dmTypes; op
     f, G
 end
 
-"""
-    fwi_objective!(G, model, source, dobs; options=Options())
-
-    Evaluate the full-waveform-inversion (reduced state) objective function. Returns a the function value and assigns in-place \\
-the gradient to G. `model` is a `Model` structure with the current velocity model and `source` and `dobs` are the wavelets and \\
-observed data of type `judiVector`.
-
-Example
-=======
-    function_value = fwi_objective!(gradient, model, source, dobs)
-"""
 function fwi_objective!(G, model::MTypes, q::Dtypes, dobs::Dtypes; options=Options(), kw...)
     n_exp = check_args(G, model, dobs, q)
     return multi_exp_fg!(Val(n_exp), G, model, q, dobs, nothing; options=options, nlind=false, lin=false, kw...)
 end
 
-"""
-    lsrtm_objective!(G, model, source, dobs, dm; options=Options(), nlind=false)
-
-    Evaluate the least-square migration (data-space) objective function. Returns the function value and assigns in-place \\
-the gradient to G. `model` is a `Model` structure with the current velocity model and `source` and `dobs` are the wavelets and \\
-observed data of type `judiVector`.
-
-Example
-=======
-    function_value = lsrtm_objective!(gradient, model, source, dobs, dm; options=Options(), nlind=false)
-"""
 function lsrtm_objective!(G, model::MTypes, q::Dtypes, dobs::Dtypes, dm::dmTypes; options=Options(), nlind=false, kw...)
     n_exp = check_args(G, model, q, dobs, dm)
     return multi_exp_fg!(Val(n_exp), G, model, q, dobs, dm; options=options, nlind=nlind, lin=true, kw...)
