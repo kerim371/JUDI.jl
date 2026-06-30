@@ -48,6 +48,9 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     # Extended source FWI: estimate source weights via LSQR
     if options.extended_source
         @juditime "Extended source LSQR" begin
+            # Debug: print sizes
+            @info "ES debug" size_qIn=size(qIn) dtComp=dtComp s_dt=s_geometry.dt[1] s_nt=s_geometry.nt[1] d_nt=d_geometry.nt[1] model_n=model.n
+
             # qIn is already resampled to dtComp, shape (nt, 1).
             # Pass it as 2D matrix wrapped in a Vector to judiWavelet,
             # so that devito_interface receives a 2D array for time_resample.
