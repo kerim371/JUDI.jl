@@ -32,7 +32,7 @@ q = judiVector(src_geometry, wavelet)
 ############################### Extended Source FWI ###########################################
 
 # ES FWI options
-opt_es = Options(extended_source=true, es_lambda=1f0, es_maxiter=5, es_verbose=true)
+opt_es = Options(extended_source=true, es_lambda=1f0, es_maxiter=2, es_verbose=true)
 
 # NLopt objective function
 count = 0

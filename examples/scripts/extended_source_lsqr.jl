@@ -49,7 +49,10 @@ Pr = judiProjection(recGeometry)
 F = judiModeling(model; options=opt)
 
 # Random weights (size of the model)
-w = judiWeights(randn(Float32, model.n))
+w_tmp = zeros(Float32, model.n)
+w_tmp[50,30] = 1f0
+w_tmp[80,80] = 1f0
+w = judiWeights(w_tmp)
 
 # Create operator for injecting the weights, multiplied by the provided wavelet(s)
 Pw = judiLRWF(dt, wavelet)
@@ -69,27 +72,35 @@ w_adj = adjoint(F)*d_sim
 # # LSQR
 w_inv = 0f0 .* w
 w_inv_no_damp = 0f0 .* w
-lsqr!(w_inv, F̄, [d_sim; lambda*w]; maxiter=2, verbose=true, damp=1e2)
-lsqr!(w_inv_no_damp, F, d_sim; maxiter=2, verbose=true, damp=1e2)
+lsqr!(w_inv, F̄, [d_sim; lambda*w]; maxiter=5, verbose=true, damp=1e2, atol = 1e-9, btol = 1e-9)
+lsqr!(w_inv_no_damp, F, d_sim; maxiter=5, verbose=true, damp=1e2, atol = 1e-9, btol = 1e-9)
 
 d_pred = F*w_inv;
 d_pred_no_damp = F*w_inv_no_damp;
 
 # Plot results
-figure()
+# Сравнение данных
+fig1 = figure()
 subplot(1,3,1)
-imshow(d_sim.data[1], vmin=-5e2, vmax=5e2, cmap="gray"); title("Observed data")
+imshow(d_sim.data[1], vmin=-1e1, vmax=1e1, cmap="gray"); title("Observed data")
 subplot(1,3,2)
-imshow(d_pred.data[1], vmin=-2e2, vmax=2e2, cmap="gray"); title("Predicted data")
+imshow(d_pred.data[1], vmin=-1e1, vmax=1e1, cmap="gray"); title("Predicted data")
 subplot(1,3,3)
-imshow(d_pred_no_damp.data[1], vmin=-2e2, vmax=2e2, cmap="gray"); title("Predicted data no damp")
+imshow(d_pred_no_damp.data[1], vmin=-1e1, vmax=1e1, cmap="gray"); title("Predicted data no damp")
+savefig("data_comparison.png", dpi=150)
+close(fig1)
 
-figure()
+
+
+# Веса и восстановления
+fig2 = figure()
 subplot(2,2,1)
-imshow(w.weights[1], vmin=-3, vmax=3, cmap="gray"); title("Weights")
+imshow(w.weights[1], vmin=0, vmax=1, cmap="gray"); title("True Weights")
 subplot(2,2,2)
-imshow(w_adj.weights[1], vmin=minimum(w_adj), vmax=maximum(w_adj), cmap="gray"); title("Adjoint")
+imshow(w_adj.weights[1], vmin=minimum(w_adj)/10f0, vmax=maximum(w_adj)/10f0, cmap="gray"); title("Adjoint")
 subplot(2,2,3)
-imshow(w_inv.weights[1], vmin=minimum(w_inv), vmax=maximum(w_inv), cmap="gray"); title("D-LSQR")
+imshow(w_inv.weights[1], vmin=minimum(w_inv)/10f0, vmax=maximum(w_inv)/10f0, cmap="gray"); title("Damped LSQR")
 subplot(2,2,4)
-imshow(w_inv_no_damp.weights[1], vmin=minimum(w_inv), vmax=maximum(w_inv), cmap="gray"); title("LSQR")
+imshow(w_inv_no_damp.weights[1], vmin=minimum(w_inv)/10f0, vmax=maximum(w_inv)/10f0, cmap="gray"); title("LSQR no damp")
+savefig("weights_comparison.png", dpi=150)
+close(fig2)
