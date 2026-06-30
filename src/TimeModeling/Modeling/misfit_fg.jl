@@ -21,7 +21,7 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
     d_geometry = Geometry(dObs.geometry)
     s_geometry = Geometry(source.geometry)
     
-    # If model preconditioner is provided, apply it
+    # If model preconditioner is provid ed, apply it
     dm = isnothing(dm) ? dm : model_precon * dm
 
     # Limit model to area with sources/receivers

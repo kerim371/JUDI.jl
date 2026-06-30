@@ -4,7 +4,7 @@
 # Date: December 2017
 #
 
-using Statistics, Random, LinearAlgebra
+using Statistics, Random, LinearAlgebra, Printf
 using JUDI, HDF5, NLopt, SegyIO
 
 # Load starting model
@@ -34,8 +34,19 @@ q = judiVector(src_geometry, wavelet)
 # ES FWI options
 opt_es = Options(extended_source=true, es_lambda=1f0, es_maxiter=2, es_verbose=true)
 
+# Save initial model
+@info "Saving initial model"
+h5open("fwi_es_initial.h5", "w") do file
+    write(file, "n", collect(n))
+    write(file, "d", collect(d))
+    write(file, "o", collect(o))
+    write(file, "m", m0)
+    write(file, "v", sqrt.(1f0 ./ m0))
+end
+
 # NLopt objective function
 count = 0
+fhistory = Float32[]
 println("No.  ", "fval         ", "norm(gradient)")
 function f!(x,grad)
 
@@ -52,7 +63,23 @@ function f!(x,grad)
     grad[1:end] = vec(gradient)
 
     global count; count += 1
+    global fhistory
+    push!(fhistory, fval)
     println(count, "    ", fval, "    ", norm(grad))
+
+    # Save iteration snapshot
+    fname = @sprintf("fwi_es_iter_%03d.h5", count)
+    h5open(fname, "w") do file
+        write(file, "n", collect(n))
+        write(file, "d", collect(d))
+        write(file, "o", collect(o))
+        write(file, "m", model0.m.data)
+        write(file, "v", sqrt.(1f0 ./ model0.m.data))
+        write(file, "gradient", vec(gradient))
+        write(file, "fval", fval)
+        write(file, "fhistory", fhistory)
+    end
+
     return convert(Float64, fval)
 end
 
@@ -62,3 +89,5 @@ lower_bounds!(opt, mmin); upper_bounds!(opt, mmax)
 min_objective!(opt, f!)
 maxeval!(opt, parse(Int, get(ENV, "NITER", "10")))
 (minf, minx, ret) = optimize(opt, vec(model0.m.data))
+
+@info "Optimization finished with result: $ret, final objective: $minf"
