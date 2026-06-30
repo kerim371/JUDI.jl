@@ -70,9 +70,11 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
             # Build regularized system: [F_ext; es_lambda * I] * w = [d_obs; 0]
             I_op = joDirac(prod(model.n), DDT=Float32, RDT=Float32)
             A_ext = [F_ext; options.es_lambda * I_op]
-            # Use original dObs (judiVector with correct geometry) for vcat with judiWeights
+            # Convert dObs to judiVector with Matrix data for vcat compat with judiWeights
+            # dObserved is already a Matrix (resampled to dtComp)
+            d_obs_jv = judiVector(d_geometry, dObserved)
             d_obs_w = judiWeights(zeros(Float32, model.n))
-            b_ext = [dObs; d_obs_w]
+            b_ext = [d_obs_jv; d_obs_w]
 
             # LSQR for source weights
             lsqr!(w, A_ext, b_ext; damp=options.es_damp, atol=options.es_atol,
