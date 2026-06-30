@@ -53,8 +53,10 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
             wavelet = vec(wavelet)
             Pw = judiWavelet(s_geometry.dt[1], wavelet)
 
-            # Forward operator on cropped model
-            Fwd = judiModeling(model, s_geometry, d_geometry; options=options)
+            # Build extended source operator as in extended_source_lsqr.jl:
+            #   F_ext = Pr * F(model_only) * Pw'
+            # where F(model_only) is a pure propagator (no projections)
+            Fwd = judiModeling(model; options=options)
             Pr = judiProjection(d_geometry)
 
             # Extended source operator: F_ext = Pr * F * Pw'
@@ -66,8 +68,10 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
             # Build regularized system: [F_ext; es_lambda * I] * w = [d_obs; 0]
             I_op = joDirac(prod(model.n), DDT=Float32, RDT=Float32)
             A_ext = [F_ext; options.es_lambda * I_op]
+            # Wrap dObserved as judiVector so vcat works with judiWeights
+            d_obs_jv = judiVector(d_geometry, dObserved)
             d_obs_w = judiWeights(zeros(Float32, model.n))
-            b_ext = [dObserved; d_obs_w]
+            b_ext = [d_obs_jv; d_obs_w]
 
             # LSQR for source weights (like in extended_source_lsqr.jl)
             lsqr!(w, A_ext, b_ext; damp=options.es_damp, atol=options.es_atol,
