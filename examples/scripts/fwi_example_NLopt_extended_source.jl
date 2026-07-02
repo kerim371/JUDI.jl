@@ -8,7 +8,21 @@ using Statistics, Random, LinearAlgebra, Printf
 using JUDI, HDF5, NLopt, SegyIO
 
 # Load starting model
-n,d,o,m0 = read(h5open("$(JUDI.JUDI_DATA)/overthrust_model.h5","r"), "n", "d", "o", "m0")
+n,d,o,m0,m_true = read(h5open("$(JUDI.JUDI_DATA)/overthrust_model.h5","r"), "n", "d", "o", "m0", "m")
+
+# === Задай свои скорости (км/с) ===
+v_start = 1.5f0   # скорость на 22-м столбце
+v_end   = 4.5f0   # скорость на последнем столбце
+
+col_start = 21
+nz = size(m0, 2)
+
+# В каждом столбце j >= col_start задаём линейную скорость по горизонтали
+for j in col_start:nz
+    v_col = v_start + (v_end - v_start) * (j - col_start) / (nz - col_start)
+    m0[:, j] .= 1f0 ./ (v_col^2)          # медленность² (с/км)²
+end
+
 model0 = Model((n[1],n[2]), (d[1],d[2]), (o[1],o[2]), m0)
 
 # Bound constraints
@@ -32,7 +46,22 @@ q = judiVector(src_geometry, wavelet)
 ############################### Extended Source FWI ###########################################
 
 # ES FWI options
-opt_es = Options(extended_source=true, es_lambda=1f0, es_maxiter=2, es_verbose=true)
+    # extended_source::Bool
+    # es_lambda::Float32
+    # es_damp::Float32
+    # es_atol::Float32
+    # es_btol::Float32
+    # es_conlim::Float32
+    # es_maxiter::Int64
+    # es_verbose::Bool
+opt_es = Options(extended_source=true, 
+    es_lambda=100f0, 
+    es_damp=0f0,
+    es_atol=1e-9,
+    es_btol=1e-9,
+    es_maxiter=5, 
+    es_verbose=true)
+# opt_es = Options(extended_source=false)
 
 # Save initial model
 @info "Saving initial model"
@@ -41,7 +70,9 @@ h5open("fwi_es_initial.h5", "w") do file
     write(file, "d", collect(d))
     write(file, "o", collect(o))
     write(file, "m", m0)
+    write(file, "m_true", m_true)
     write(file, "v", sqrt.(1f0 ./ m0))
+    write(file, "v_true", sqrt.(1f0 ./ m_true))
 end
 
 # NLopt objective function
@@ -75,8 +106,10 @@ function f!(x,grad)
         write(file, "d", collect(d))
         write(file, "o", collect(o))
         write(file, "m", model0.m.data)
+        write(file, "m_true", m_true)
         write(file, "v", sqrt.(1f0 ./ model0.m.data))
-        write(file, "gradient", vec(gradient))
+        write(file, "v_true", sqrt.(1f0 ./ m_true))
+        write(file, "gradient", gradient)
         write(file, "fval", fval)
         write(file, "fhistory", fhistory)
     end

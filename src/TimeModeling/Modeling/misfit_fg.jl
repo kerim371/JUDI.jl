@@ -49,15 +49,18 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
         @juditime "Extended source LSQR" begin
             # Use raw wavelet from source (not resampled) so that
             # devito_interface can resample it to the correct dt internally.
-            wavelet_raw = make_input(source)
+            wavelet_raw = make_input(source)  # (nt_src, 1) or (nt_src,)
             if ndims(wavelet_raw) == 1
                 wavelet_raw = reshape(wavelet_raw, length(wavelet_raw), 1)
             end
             Pw = judiWavelet(s_geometry.dt[1], wavelet_raw)
 
-            # Build extended source operator: F_ext = Pr * F * Pw'
+            # Build extended source operator as in extended_source_lsqr.jl:
+            #   F_ext = Pr * F(model_only) * Pw'
             Fwd = judiModeling(model; options=options)
             Pr = judiProjection(d_geometry)
+
+            # Extended source operator: F_ext = Pr * F * Pw'
             F_ext = Pr * Fwd * adjoint(Pw)
 
             # Initialize weights (zeros on cropped model)
@@ -66,10 +69,17 @@ function _multi_src_fg(model_full::AbstractModel, source::Dtypes, dObs::Dtypes, 
             # Build regularized system: [F_ext; es_lambda * I] * w = [d_obs; 0]
             I_op = joDirac(prod(model.n), DDT=Float32, RDT=Float32)
             A_ext = [F_ext; options.es_lambda * I_op]
+            # Use original dObs (judiVector with correct geometry) for vcat with judiWeights
+            d_obs_w = judiWeights(zeros(Float32, model.n))
+            b_ext = [get_data(dObs); d_obs_w]
+            println("typeof(dObs): $(typeof(dObs))")
+            println("typeof(dObs[1]): $(typeof(dObs[1]))")
+            println("size(dObs): $(size(dObs))")
+            println("typeof(get_data(dObs)): $(typeof(get_data(dObs)))")
+            println("typeof(make_input(dObs)): $(typeof(make_input(dObs)))")
 
-            # Build RHS as plain vector to avoid judiVector/judiWeights type issues
-            rhs_data = vcat(vec(dObserved), zeros(Float32, prod(model.n)))
-            lsqr!(w, A_ext, rhs_data; damp=options.es_damp, atol=options.es_atol,
+            # LSQR for source weights
+            lsqr!(w, A_ext, b_ext; damp=options.es_damp, atol=options.es_atol,
                   btol=options.es_btol, conlim=options.es_conlim,
                   maxiter=options.es_maxiter, verbose=options.es_verbose)
 
