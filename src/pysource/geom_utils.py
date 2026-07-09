@@ -65,6 +65,11 @@ def geom_expr(model, u, src_coords=None, rec_coords=None,
     src, rcv = src_rec(model, u, src_coords, rec_coords, wavelet, nt)
     model.__init_abox__(src, rcv, fw=fw)
 
+    # Вычисляем объём/площадь ячейки
+    dV = 1.0
+    for d in range(model.grid.dim):
+        dV *= model.spacing[d]
+
     geom_expr = []
     # Source
     if src is not None:
@@ -72,14 +77,14 @@ def geom_expr(model, u, src_coords=None, rec_coords=None,
         if model.is_elastic:
             c = 1 / model.grid.dim
             src_eq = src.inject(field=as_tuple(u)[1].forward.diagonal(),
-                                expr=c*src*dt/irho)
+                                expr=c*src*dt/(irho * dV))
             if model.fs:
                 # Free surface
                 src_eq = mirror_source(model, src_eq)
         else:
             # Acoustic inject into pressure
             u_n = as_tuple(u)[0].forward if fw else as_tuple(u)[0].backward
-            src_eq = src.inject(field=u_n, expr=src*dt**2/m)
+            src_eq = src.inject(field=u_n, expr=src*dt**2/(m * dV))
             if model.fs:
                 # Free surface
                 src_eq = mirror_source(model, src_eq)
