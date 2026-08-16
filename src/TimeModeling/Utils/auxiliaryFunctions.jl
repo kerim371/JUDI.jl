@@ -127,10 +127,28 @@ Parameters
 * `pert`: Model perturbation (optional) to be cropped as well.
 """
 function limit_model_to_receiver_area(srcGeometry::Geometry{T}, recGeometry::Geometry{T},
-                                      model::MT, buffer::Number; pert=nothing) where {MT<:AbstractModel, T<:Real}
-    # Restrict full velocity model to area that contains either sources and receivers
+                                      model::MT, buffer::Union{Real, Tuple{<:Real,<:Real}, Tuple{Tuple{<:Real,<:Real}, Tuple{<:Real,<:Real}}}; 
+                                      pert=nothing) where {MT<:AbstractModel, T<:Real}
     ndim = length(size(model))
     n_orig = size(model)
+
+    # --- Разбор buffer ---
+    bx_lo = bx_hi = by_lo = by_hi = 0.0
+
+    if buffer isa Real
+        bx_lo = bx_hi = by_lo = by_hi = buffer
+    elseif buffer isa Tuple && length(buffer) == 2 && all(x -> x isa Real, buffer)
+        bx_lo, bx_hi = buffer
+        by_lo, by_hi = buffer
+    elseif ndim == 3 && buffer isa Tuple && length(buffer) == 2 &&
+           all(b -> b isa Tuple && length(b) == 2 && all(x -> x isa Real, b), buffer)
+        (bx_lo, bx_hi), (by_lo, by_hi) = buffer
+    else
+        throw(ArgumentError(
+            "buffer must be a number, (lo, hi) or for 3D ((x_lo, x_hi), (y_lo, y_hi))"
+        ))
+    end
+
     # scan for minimum and maximum x and y source/receiver coordinates
     min_x = min(minimum(recGeometry.xloc[1]), minimum(srcGeometry.xloc[1]))
     max_x = max(maximum(recGeometry.xloc[1]), maximum(srcGeometry.xloc[1]))
@@ -140,11 +158,11 @@ function limit_model_to_receiver_area(srcGeometry::Geometry{T}, recGeometry::Geo
     end
 
     # add buffer zone if possible
-    min_x = max(origin(model, 1), min_x - buffer)
-    max_x = min(origin(model, 1) + spacing(model, 1)*(size(model, 1)-1), max_x + buffer)
+    min_x = max(origin(model, 1), min_x - bx_lo)
+    max_x = min(origin(model, 1) + spacing(model, 1)*(size(model, 1)-1), max_x + bx_hi)
     if ndim == 3
-        min_y = max(origin(model, 2), min_y - buffer)
-        max_y = min(origin(model, 2) + spacing(model, 2)*(size(model, 2)-1), max_y + buffer)
+        min_y = max(origin(model, 2), min_y - by_lo)
+        max_y = min(origin(model, 2) + spacing(model, 2)*(size(model, 2)-1), max_y + by_hi)
     end
 
     # extract part of the model that contains sources/receivers

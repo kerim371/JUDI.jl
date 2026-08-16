@@ -10,7 +10,7 @@ mutable struct JUDIOptions
     space_order::Int64
     free_surface::Bool
     limit_m::Bool
-    buffer_size::Float32
+    buffer_size::Union{Real, Tuple{<:Real,<:Real}, Tuple{Tuple{<:Real,<:Real}, Tuple{<:Real,<:Real}}}
     save_data_to_disk::Bool
     file_path::String
     file_name::String
@@ -30,7 +30,7 @@ end
         space_order::Integer
         free_surface::Bool
         limit_m::Bool
-        buffer_size::AbstractFloat
+        buffer_size::Union{Real, Tuple{<:Real,<:Real}, Tuple{Tuple{<:Real,<:Real}, Tuple{<:Real,<:Real}}}
         save_rate::AbstractFloat
         save_data_to_disk::Bool
         file_path::String
