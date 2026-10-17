@@ -12,6 +12,7 @@ include("LinearOperators/basics.jl")
 const Pdtypes = Union{Float32, Float16}
 
 include("Types/ModelStructure.jl")    # model container
+include("Utils/gradientFilters.jl")   # MUST BE INCLUDED BEFORE OptionsStructure as it is used there
 include("Types/GeometryStructure.jl") # source or receiver setup, recording time and sampling
 include("Types/OptionsStructure.jl")
 

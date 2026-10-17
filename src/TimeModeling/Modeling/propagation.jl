@@ -84,22 +84,30 @@ function multi_src_propagate(F::judiPropagator{T, O}, q::AbstractArray{Tq}) wher
 end
 
 """
-    multi_src_fg!(G, model, q, dobs, dm; options=Options(), nlind=false, lin=false)
+    smooth_ms_wrapper(ms_func, model, q, dobs, dm, options; kw...)
 
-This is the main multi-source wrapper function for `fwi_objective` and `lsrtm_objective`.
-Computes the misifit and gradient (LSRTM if `lin` else FWI) for the given `q` source and `dobs` and
-perturbation `dm`.
+Per-shot wrapper used by `run_and_reduce`. Calls `ms_func` for a single shot
+and, if `options.smooth_func !== nothing`, applies it to the gradient.
 """
+function smooth_ms_wrapper(ms_func, model, q, dobs, dm, options; kw...)
+    f, g = ms_func(model, q, dobs, dm, options; kw...)
+    sf = options.smooth_func
+    if !isnothing(sf)
+        g = sf(g, model)
+    end
+    return (f, g)
+end
+
 function multi_src_fg!(G, model, q, dobs, dm; options=Options(), ms_func=multi_src_fg, kw...)
     # Number of sources and init result
     nsrc = try q.nsrc catch; dobs.nsrc end
     pool = _worker_pool()
     illum = compute_illum(model, :adjoint_born)
     # Distribute source
-    arg_func = i -> (model, q[i], dobs[i], dm, options[i])
-    kw_func = i -> Dict(:illum=> illum, Dict(k => kw_i(v, i) for (k, v) in kw)...)
+    arg_func = i -> (ms_func, model, q[i], dobs[i], dm, options[i])   # ← ms_func в args
+    kw_func  = i -> Dict(:illum=> illum, Dict(k => kw_i(v, i) for (k, v) in kw)...)
     # Distribute source
-    res = run_and_reduce(ms_func, pool, nsrc, arg_func; kw=kw_func)
+    res = run_and_reduce(smooth_ms_wrapper, pool, nsrc, arg_func; kw=kw_func)
     res = update_illum(res, model, :adjoint_born)
     f, g = as_vec(res, Val(options.return_array))
     G .+= g

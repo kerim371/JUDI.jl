@@ -23,6 +23,7 @@ mutable struct JUDIOptions
     return_array::Bool
     dt_comp::Union{Float32, Nothing}
     f0::Float32
+    smooth_func::Union{AbstractGradientFilter, Function, Nothing}
 end
 
 """
@@ -44,6 +45,7 @@ end
         return_array::Bool
         dt_comp::Real
         f0::Real
+        smooth_func=nothing,
 
 
 
@@ -96,7 +98,7 @@ All arguments are optional keyword arguments with the following default values:
             num_checkpoints=nothing, checkpoints_maxmem=nothing,
             frequencies=[], isic=false,
             subsampling_factor=1, dft_subsampling_factor=1, return_array=false,
-            dt_comp=nothing, f0=0.015f0)
+            dt_comp=nothing, f0=0.015f0, smooth_func=nothing)
 
 """
 function Options(;space_order=8, free_surface=false,
@@ -111,6 +113,7 @@ function Options(;space_order=8, free_surface=false,
                   dt_comp=nothing,
                   f0=0.015f0,
                   IC="as",
+                  smooth_func=nothing,
                   kw...)
     
     ic = imcond(get(kw, :isic, false), IC)
@@ -120,7 +123,7 @@ function Options(;space_order=8, free_surface=false,
     end
     return JUDIOptions(space_order, free_surface, limit_m, buffer_size, save_data_to_disk,
                 file_path, file_name, sum_padding, optimal_checkpointing, frequencies,
-                ic, subsampling_factor, dft_subsampling_factor, return_array, dt_comp, f0)
+                ic, subsampling_factor, dft_subsampling_factor, return_array, dt_comp, f0, smooth_func)
 end
 
 JUDIOptions(;kw...) = Options(kw...)
