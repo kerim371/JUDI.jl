@@ -63,11 +63,27 @@ get_nsrc(::judiPropagator, q::Vector{<:Array}) = length(q)
 get_nsrc(J::judiAbstractJacobian, ::dmType{T}) where T<:Number = J.q.nsrc
 
 """
-    multi_src_propagate(F::judiPropagator{T, O}, q::AbstractVector)
+    smooth_propagate_wrapper(F, q, illum)
 
-Propagates the source `q` with the `F` propagator. The return type is infered from `F` and the 
-propagation kernel is defined by `O` (forward, adjoint, born or adjoint_born).
+Per-shot wrapper for `propagate`. Applies `F.options.smooth_func` to the
+propagator output when it is a model-space object (gradient / wavefield),
+i.e. for adjoint/adjoint_born modes. Forward (data-space) output is left
+untouched so that setting `smooth_func` in `Options` does not corrupt
+modelled data.
 """
+function smooth_propagate_wrapper(F, q, illum)
+    res = propagate(F, q, illum)
+    sf  = F.options.smooth_func
+    if !isnothing(sf) && !isnothing(res)
+        if res isa PhysicalParameter
+            res = sf(res, F.model)
+        elseif res isa Tuple && res[1] isa PhysicalParameter
+            res = (sf(res[1], F.model), res[2:end]...)
+        end
+    end
+    return res
+end
+
 function multi_src_propagate(F::judiPropagator{T, O}, q::AbstractArray{Tq}) where {T<:Number, Tq<:Pdtypes, O}
     q = process_input_data(F, q)
     # Number of sources and init result
@@ -76,7 +92,7 @@ function multi_src_propagate(F::judiPropagator{T, O}, q::AbstractArray{Tq}) wher
     illum = compute_illum(F.model, O)
     arg_func = i -> (F[i], src_i(F, q, i), illum)
     # Distribute source
-    res = run_and_reduce(propagate, pool, nsrc, arg_func)
+    res = run_and_reduce(smooth_propagate_wrapper, pool, nsrc, arg_func)
     res = update_illum(res, F)
     res = _project_to_physical_domain(res, F.model)
     res = as_vec(res, Val(F.options.return_array))
